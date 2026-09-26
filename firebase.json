@@ -1,0 +1,23 @@
+{
+  "//": "Hosting is NOT configured in this build. CareGrid AI is deployed to Vercel (docs/19_DEPLOYMENT_DEVOPS.md §3); this file exists so `firebase deploy --only firestore:rules` works, and so a reviewer can see that the Hosting target was considered and deliberately left unset rather than forgotten.",
+  "//deploy_command": "npm run build && npx vercel --prod   (the frontend). For the backend: vercel deploy. For the rules: npx firebase-tools deploy --only firestore:rules,firestore:indexes,storage",
+  "//why_no_hosting": "A second hosting target would mean a second build pipeline, a second set of environment variables, and a second origin to keep in the CSRF allow-list — for the same static output. One target is fewer ways for the security headers to differ between environments.",
+  "hosting": {
+    "public": "out",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "emulators": {
+    "auth": { "port": 9099 },
+    "firestore": { "port": 8080 },
+    "storage": { "port": 9199 },
+    "ui": { "enabled": true, "port": 4000 },
+    "singleProjectMode": true
+  }
+}

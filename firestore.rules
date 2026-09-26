@@ -1,0 +1,438 @@
+rules_version = '2';
+
+/**
+ * ============================================================================
+ * CareGrid AI — Firestore Security Rules
+ * ============================================================================
+ * Normative source: docs/10_AUTHORIZATION_SECURITY.md §9, which is a
+ * transcription of docs/22_USER_ROLES_PERMISSIONS.md §7. This file is the
+ * source of truth for what a client SDK may read and write.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THESE RULES ARE, AND WHAT THEY ARE NOT
+ * ---------------------------------------------------------------------------
+ * They are LAYER 4 of six (docs/22 §6). They stop a browser — or a script
+ * running in someone's browser — from reading or writing anything the API would
+ * not permit. They are NOT the primary authorisation boundary; that is
+ * `requireUser()` in `lib/server/auth-guard.ts`, which reads the AUTHORITATIVE
+ * role from Firestore.
+ *
+ * The distinction matters because of what these rules can see:
+ *
+ *   `role() { return request.auth.token.role; }`
+ *
+ * That is the CUSTOM CLAIM, not `users/{uid}.role`. The claim is a MIRROR,
+ * written by the server after a role change. So:
+ *
+ *   - A rules-only path can be wrong for up to one token lifetime after a role
+ *     change, until the claim is refreshed.
+ *   - The API detects exactly that situation and answers `403 ROLE_MISMATCH`
+ *     plus an audit entry.
+ *
+ * This is not a shortcut. It is the documented resolution of the fact that
+ * Firestore rules cannot perform a document read per request in a way that is
+ * both correct and affordable, and it is why EVERY privileged read in this
+ * product is server-mediated rather than listener-driven.
+ *
+ * ---------------------------------------------------------------------------
+ * THE FIVE INVARIANTS THIS FILE ENFORCES
+ * ---------------------------------------------------------------------------
+ * 1. `users/{uid}` is READ-ONLY to clients, for everyone, forever. The role and
+ *    the account status are written only by the Admin SDK. This single line is
+ *    what makes privilege escalation impossible: a user cannot promote
+ *    themselves, cannot un-suspend themselves, and cannot forge a role, because
+ *    they cannot write the field at all.
+ * 2. `auditLogs` is APPEND-ONLY. `update` and `delete` are denied to every role
+ *    INCLUDING admin (docs/22 §3 row 59). An audit log you can edit is not an
+ *    audit log.
+ * 3. Field allow-lists on every client write. A responder may change their own
+ *    `status`, `capabilities`, `serviceRadiusM`, `phone`, `notifPrefs`,
+ *    `updatedAt` — and NOT `verification`, which is what stops a responder
+ *    self-approving (FR-063).
+ * 4. Ownership is checked on every subcollection, using the PARENT's
+ *    `reporterUid`/`assigneeUid`. A citizen who knows another citizen's
+ *    incident id still cannot read its reports, because the parent rule runs.
+ * 5. DENY BY DEFAULT. The catch-all at the bottom denies everything, and there
+ *    is no `allow` without a stated condition. A collection added later is
+ *    closed until someone writes its rule — the safe direction to fail.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT THESE RULES CANNOT DO (docs/10 §11)
+ * ---------------------------------------------------------------------------
+ * - Cannot compute distance. So "responder sees unassigned incidents within
+ *   their service radius" (row 7) is enforced in the API and delivered by a
+ *   server read, never by a direct client listener.
+ * - Cannot count requests. So the rate-limiting token bucket is server-side.
+ * - Cannot verify a token against Firestore. Hence the claim mirror above.
+ * - Cannot do a transaction across rules. Hence the audit-write-in-transaction
+ *   requirement in `lib/server/audit.ts`.
+ */
+
+service firebase.firestore {
+  match /databases/{database}/documents {
+
+    /* ===================================================================== */
+    /* Helpers                                                               */
+    /* ===================================================================== */
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    /**
+     * The role CLAIM, not `users/{uid}.role`. See the file header — this is the
+     * documented mirror, and the API is what reconciles it.
+     */
+    function role() {
+      return request.auth.token.role;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && role() == 'admin';
+    }
+
+    function isDispatch() {
+      return isSignedIn() && (role() == 'dispatcher' || isAdmin());
+    }
+
+    function isResponder() {
+      return isSignedIn() && role() == 'responder';
+    }
+
+    /** Operational roles: the people who work the queue. */
+    function isOps() {
+      return isDispatch() || isResponder();
+    }
+
+    function isSelf(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    /**
+     * The fields a user may write on their OWN profile document.
+     *
+     * `hasOnly` on the FULL key set, not on the diff: a `create` has no
+     * `resource` to diff against, so a diff-based check would pass vacuously on
+     * creation and let a client seed a document with a `role` field.
+     */
+    function profileWritableFields() {
+      return ['displayName', 'timezone', 'locale', 'notifPrefs', 'updatedAt', 'schemaVersion'];
+    }
+
+    /* ===================================================================== */
+    /* users — the authoritative role store. CLIENT-WRITE NEVER.             */
+    /* ===================================================================== */
+
+    /**
+     * `allow write: if false` is the single most important line in this file.
+     *
+     * It means a signed-in user cannot modify their own role, cannot change
+     * their own status, cannot clear a `suspended` flag, and cannot forge a
+     * `dispatcher` claim by writing the Firestore document. There is no
+     * condition to satisfy because there is no client path here at all.
+     *
+     * Reads: a user may read their OWN record. Dispatchers and admins may read
+     * any, because the operations console lists users and the admin user table
+     * needs them. Responders and citizens may NOT read another user's record —
+     * that document holds the email address, which is PII with no
+     * operational need to be visible to a peer.
+     */
+    match /users/{uid} {
+      allow get: if isSelf(uid) || isDispatch();
+      allow list: if isDispatch();
+      allow create, update, delete: if false;
+    }
+
+    /* ===================================================================== */
+    /* profiles — user-editable preferences                                  */
+    /* ===================================================================== */
+
+    match /profiles/{uid} {
+      allow get: if isSelf(uid) || isDispatch();
+      allow list: if isDispatch();
+
+      allow create, update: if isSelf(uid)
+        && request.resource.data.keys().hasOnly(profileWritableFields())
+        && request.resource.data.uid == uid
+        // The notification channels that do not exist. A client writing
+        // `sms: true` is recording a preference the system can never honour, so
+        // it is refused at the boundary rather than silently ignored later.
+        && (!('notifPrefs' in request.resource.data)
+            || (request.resource.data.notifPrefs.sms == false
+                && request.resource.data.notifPrefs.whatsapp == false));
+
+      // A profile is removed by deleting the account, which happens through the
+      // Admin SDK. No client path.
+      allow delete: if false;
+    }
+
+    /* ===================================================================== */
+    /* incidents                                                             */
+    /* ===================================================================== */
+
+    match /incidents/{incidentId} {
+      function reporter() {
+        return resource.data.reporterUid;
+      }
+
+      function assignee() {
+        return resource.data.assigneeUid;
+      }
+
+      function notDeleted() {
+        return resource.data.deletedAt == null;
+      }
+
+      /**
+       * Visibility.
+       *
+       * In-radius responder visibility (row 7) is DELIBERATELY ABSENT. Rules
+       * cannot compute a distance, so a responder reading an unassigned nearby
+       * incident must be served by a server read, not by a client listener
+       * (docs/10 §11). Adding `isResponder()` here would grant every responder
+       * visibility of every incident in the city.
+       */
+      function canRead() {
+        return isDispatch()
+          || (isSignedIn() && reporter() == request.auth.uid)
+          || (isSignedIn() && assignee() == request.auth.uid);
+      }
+
+      /**
+       * The fields a reporter may set at CREATE time.
+       *
+       * A narrow allow-list, and it is the whole allow-list — the server owns
+       * `status`, `urgency`, `summary`, `aiConfidence`, `safetyFlags`,
+       * `reference`, `slaTargetMin`, and every derived field. This is what stops
+       * a client writing `status: 'verified'` or `urgency: 'low'` for its own
+       * report and skipping triage.
+       */
+      function clientCreatableFields() {
+        return ['reporterUid', 'reporterAnon', 'originalText', 'language', 'geo',
+                'geoCells', 'locationText', 'placeId', 'placeName', 'source',
+                'evidenceCount', 'createdAt', 'createdByRole', 'schemaVersion',
+                'reportCount', 'categoryRaw', 'peopleAffected'];
+      }
+
+      function mutableFields() {
+        return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['geo', 'geoCells', 'locationText', 'placeId', 'placeName',
+                    'source', 'updatedAt', 'searchTokens', 'peopleAffected']);
+      }
+
+      allow get: if canRead() && notDeleted();
+      allow list: if canRead() && notDeleted();
+
+      allow create: if isSignedIn()
+        && request.resource.data.reporterUid == request.auth.uid
+        // DEC-10: anonymous reporting is rejected. A user with no Auth identity
+        // fails the first condition anyway; this makes the intent explicit.
+        && request.resource.data.reporterAnon == false
+        && request.resource.data.keys().hasOnly(clientCreatableFields())
+        // The one lifecycle value a client may assert is the initial state, and
+        // it must be the ONLY legal initial state.
+        && request.resource.data.get('status', 'new') == 'new';
+
+      /**
+       * A citizen may adjust the LOCATION on their own unverified incident, and
+       * nothing else. `mutableFields()` is a diff check, so adding `urgency` to
+       * the same write is denied. And the status gate means a verified incident
+       * is immutable to its reporter — at that point a dispatcher owns the
+       * record (FR-039).
+       */
+      allow update: if isDispatch()
+        || (isSignedIn()
+            && reporter() == request.auth.uid
+            && notDeleted()
+            && resource.data.status in ['new', 'triaged']
+            && mutableFields());
+
+      // Soft delete only, server-side (FR-123). `delete: if false` is what makes
+      // a hard delete impossible from a browser.
+      allow delete: if false;
+
+      /* --- subcollections ------------------------------------------------ */
+
+      match /reports/{reportId} {
+        allow get, list: if canRead() && notDeleted();
+
+        allow create: if isSignedIn()
+          && request.resource.data.reporterUid == request.auth.uid
+          && get(/databases/$(database)/documents/incidents/$(incidentId)).data.reporterUid == request.auth.uid;
+
+        // A report is immutable once submitted. FR-003: the reporter's text is
+        // verbatim and is never overwritten. A correction is a NEW report.
+        allow update, delete: if false;
+      }
+
+      match /statusHistory/{eventId} {
+        allow get, list: if canRead() && notDeleted();
+        allow write: if false;
+      }
+
+      match /evidence/{mediaId} {
+        // Evidence paths are server-written. Client access is a short-lived
+        // signed URL from the API after a resource-level check (docs/10 §10.2).
+        allow read, write: if false;
+      }
+    }
+
+    /* ===================================================================== */
+    /* responders                                                            */
+    /* ===================================================================== */
+
+    match /responders/{uid} {
+      function selfEditableFields() {
+        return ['status', 'capabilities', 'serviceRadiusM', 'phone', 'notifPrefs',
+                'updatedAt', 'schemaVersion', 'displayName'];
+      }
+
+      allow get: if isDispatch() || isSelf(uid);
+      // A citizen or responder must not be able to enumerate the directory —
+      // that is a list of every volunteer's name, availability, and location.
+      allow list: if isDispatch();
+
+      // Server-created from an admin role change, never by the client.
+      allow create, delete: if false;
+
+      /**
+       * The important branch.
+       *
+       * A responder editing their own record is limited to `selfEditableFields`,
+       * which EXCLUDES `verification`. So the one field that would let someone
+       * put themselves in the candidate list is not writable by them — admin
+       * only, in the `isAdmin()` branch below. This is enforcement of FR-063 at
+       * the storage layer, independent of whether the API checks it.
+       */
+      allow update: if isSelf(uid)
+        ? request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(selfEditableFields())
+        : isAdmin();
+    }
+
+    /* ===================================================================== */
+    /* responderLocations                                                    */
+    /* ===================================================================== */
+
+    match /responderLocations/{uid} {
+      function locationFields() {
+        return ['geo', 'accuracyM', 'accuracyGrade', 'headingDeg', 'speedMps',
+                'source', 'status', 'activeIncidentId', 'capturedAt', 'receivedAt',
+                'stale', 'updatedAt', 'schemaVersion'];
+      }
+
+      // Read: operations only. A responder reads their own location through the
+      // API, so a listener cannot be used to track every responder in the city.
+      allow get: if isDispatch() || isSelf(uid);
+      allow list: if isDispatch();
+      allow read: if false; // the above two cover get/list; no `in` queries
+
+      /**
+       * Write: self only, and only for the location fields.
+       *
+       * The `uid == uid` check on the resource closes the substitution attack
+       * where a responder writes into ANOTHER responder's document. Rate
+       * limiting is NOT here — rules cannot count requests (docs/10 §11), so the
+       * token bucket is server-side.
+       */
+      allow create, update: if isSelf(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.keys().hasOnly(locationFields());
+
+      allow delete: if false;
+    }
+
+    /* ===================================================================== */
+    /* dispatches — server-mediated only                                    */
+    /* ===================================================================== */
+
+    match /dispatches/{dispatchId} {
+      allow get: if isDispatch() || (isResponder() && resource.data.responderUid == request.auth.uid);
+      allow list: if isDispatch() || (isResponder() && resource.data.responderUid == request.auth.uid);
+      // FR-074: an assignment is created by a human through the API, never by a
+      // client write. A client that could write here could assign itself.
+      allow write: if false;
+    }
+
+    /* ===================================================================== */
+    /* notifications                                                         */
+    /* ===================================================================== */
+
+    match /notifications/{notificationId} {
+      allow get, list: if isSignedIn() && resource.data.recipientUid == request.auth.uid;
+      allow create, delete: if false;
+
+      /**
+       * The recipient may mark ONE notification read. The diff allow-list means
+       * they may not rewrite its `body` — otherwise a client could forge a
+       * notification that looks like it came from a dispatcher.
+       */
+      allow update: if isSignedIn()
+        && resource.data.recipientUid == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['read', 'readAt', 'updatedAt']);
+    }
+
+    /* ===================================================================== */
+    /* reference, telemetry, config                                          */
+    /* ===================================================================== */
+
+    match /resources/{resourceId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /riskZones/{zoneId} {
+      allow read: if isOps();
+      allow write: if isAdmin();
+    }
+
+    match /aiRuns/{runId} {
+      allow read: if isDispatch();
+      allow write: if false;
+    }
+
+    /**
+     * APPEND-ONLY. docs/22 §3 row 59.
+     *
+     * There is no condition on `update` or `delete` because there is no role
+     * for which the condition would be true. An administrator who cannot delete
+     * an audit entry is the whole point: the log has to be worth something to
+     * the person it is most likely to be used against.
+     */
+    match /auditLogs/{logId} {
+      allow read: if isDispatch();
+      allow list: if isDispatch();
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    match /analyticsDaily/{day} {
+      allow read: if isDispatch();
+      allow write: if false;
+    }
+
+    /** The rate-limit buckets. Nobody reads them, nobody writes them. */
+    match /rateLimits/{key} {
+      allow read, write: if false;
+    }
+
+    match /config/{configId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    /* ===================================================================== */
+    /* DENY BY DEFAULT                                                       */
+    /* ===================================================================== */
+
+    /**
+     * A collection with no rule above is unreachable. This is the correct
+     * direction to fail: adding a collection without writing its rule closes it,
+     * and the mistake surfaces in development rather than in production.
+     */
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

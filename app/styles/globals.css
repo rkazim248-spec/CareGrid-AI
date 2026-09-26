@@ -1,0 +1,609 @@
+/* ============================================================================
+ * CareGrid AI — global stylesheet
+ * Phase 1 (UI/UX foundation)
+ *
+ * Token source of truth: docs/04_UI_UX_DESIGN_SPECIFICATION.md §2 (colour),
+ * §3 (typography), §4 (spacing, radius, elevation, borders, motion).
+ *
+ * RULES ENFORCED HERE (see eslint.config.mjs "caregrid/design-system"):
+ *   1. No hex literal may appear in any .tsx file. Colour lives here only.
+ *   2. No gradient-to-* utility anywhere. This is an operations console, not a
+ *      marketing template (doc 04 §1.3 A1).
+ *   3. Urgency/status is NEVER colour alone. That is a component contract
+ *      (UrgencyBadge / StatusBadge / ConfidenceBadge), not a CSS concern.
+ *   4. prefers-reduced-motion reduces every animation to <= 80ms.
+ * ========================================================================= */
+
+@import 'tailwindcss';
+
+/* -------------------------------------------------------------------------- */
+/* 1. Raw palette                                                            */
+/*                                                                             */
+/* Declared as CSS custom properties on :root so both the Tailwind @theme     */
+/* block and shadcn/ui's variable names resolve to the SAME values. Two        */
+/* palettes in parallel is how a design system rots.                           */
+/* -------------------------------------------------------------------------- */
+
+:root {
+  color-scheme: dark;
+
+  /* --- Surfaces (doc 04 §2.2) --------------------------------------------- */
+  --cg-bg-app: #0b0f14; /* application canvas, sidebar, top bar, bottom nav    */
+  --cg-bg-surface: #121820; /* cards, panels, table body, dialog body          */
+  --cg-bg-elevated: #1b2430; /* hover fills, inputs, menus, tab strip          */
+  --cg-bg-inset: #080b0f; /* wells: code, evidence, map list fallback         */
+  --cg-bg-scrim: rgb(4 7 10 / 0.72); /* dialog / sheet backdrop              */
+
+  /* --- Text (doc 04 §2.3) -------------------------------------------------- */
+  --cg-text-primary: #e9eff6;
+  --cg-text-secondary: #a8b6c6;
+  --cg-text-muted: #82909f;
+  --cg-text-on-solid: #04191d; /* foreground on a solid accent fill            */
+  --cg-text-inverse: #e9eff6; /* foreground on solid danger/warning/urgency   */
+
+  /* --- Borders (doc 04 §2.4) ---------------------------------------------- */
+  --cg-border-subtle: #212b37;
+  --cg-border-default: #2a3745;
+  --cg-border-strong: #3a4a5c;
+  --cg-border-control: #5e7085; /* interactive control boundary, meets 1.4.11  */
+  --cg-border-focus: #7cc4ff;
+  --cg-border-selected: #2ab3c9;
+
+  /* --- Semantic (doc 04 §2.5) -------------------------------------------- */
+  --cg-accent: #2ab3c9;
+  --cg-accent-hover: #35c4da;
+  --cg-accent-active: #1f97ab;
+  --cg-accent-muted: #0a2126;
+  --cg-accent-fg-muted: #6bd6e6;
+
+  --cg-danger: #ff6b6b;
+  --cg-danger-muted: #2b1114;
+  --cg-danger-fg-muted: #ff8a8c;
+
+  --cg-warning: #f2c744;
+  --cg-warning-muted: #2a230d;
+  --cg-warning-fg-muted: #f5d77a;
+
+  --cg-success: #35b37e;
+  --cg-success-muted: #0d2119;
+  --cg-success-fg-muted: #66d3a3;
+
+  --cg-info: #4c9bf0;
+  --cg-info-muted: #0f1e30;
+  --cg-info-fg-muted: #8cc0f7;
+
+  --cg-neutral: #8e9bb0;
+  --cg-neutral-muted: #1b2430;
+
+  /* --- Urgency (doc 04 §2.6) ----------------------------------------------
+   * These four are the one thing that cannot be revisited late (doc 30 §4.8).
+   * Every value is contrast-verified in doc 04 §2.11. Do not "improve" them.
+   */
+  --cg-urgency-critical: #ff5c5c;
+  --cg-urgency-critical-muted: #2b1114;
+  --cg-urgency-high: #ff8a3d;
+  --cg-urgency-high-muted: #2b1a0e;
+  --cg-urgency-medium: #f2c744;
+  --cg-urgency-medium-muted: #2a230d;
+  --cg-urgency-low: #4c9bf0;
+  --cg-urgency-low-muted: #0f1e30;
+
+  /* --- Status (doc 04 §2.7) ----------------------------------------------- */
+  --cg-status-new: #8593a6;
+  --cg-status-triaged: #2ab3c9;
+  --cg-status-verified: #35b37e;
+  --cg-status-assigned: #7c8bff;
+  --cg-status-assigned-muted: #15182b;
+  --cg-status-en-route: #4c9bf0;
+  --cg-status-on-scene: #2bb3a3;
+  --cg-status-on-scene-muted: #0a2126;
+  --cg-status-resolved: #5cc98b;
+  --cg-status-closed: #6b7a8b;
+  --cg-status-cancelled: #8e9bb0;
+  --cg-status-false-alarm: #b08cf0;
+  --cg-status-false-alarm-muted: #1b1630;
+  --cg-status-merged: #8aa0b8;
+
+  /* --- AI confidence (doc 04 §2.8) ---------------------------------------- */
+  --cg-confidence-high: #35b37e;
+  --cg-confidence-medium: #f2c744;
+  --cg-confidence-low: #ffa23a;
+
+  /* --- Map placeholder palette (doc 04 §2.9) ------------------------------ */
+  --cg-map-land: #0b0f14;
+  --cg-map-block: #141c25;
+  --cg-map-road-major: #2a3745;
+  --cg-map-road-minor: #1b2430;
+  --cg-map-water: #0b1a26;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 2. Tailwind theme                                                          */
+/*                                                                             */
+/* Exposed as utilities. `bg-app`, `text-secondary`, `border-control`,         */
+/* `text-urgency-critical` and friends are generated from these.               */
+/* -------------------------------------------------------------------------- */
+
+@theme inline {
+  /* Surfaces */
+  --color-app: var(--cg-bg-app);
+  --color-surface: var(--cg-bg-surface);
+  --color-elevated: var(--cg-bg-elevated);
+  --color-inset: var(--cg-bg-inset);
+  --color-scrim: var(--cg-bg-scrim);
+
+  /* Text */
+  --color-primary: var(--cg-text-primary);
+  --color-secondary: var(--cg-text-secondary);
+  --color-muted: var(--cg-text-muted);
+  --color-on-solid: var(--cg-text-on-solid);
+  --color-inverse: var(--cg-text-inverse);
+
+  /* Borders */
+  --color-subtle: var(--cg-border-subtle);
+  --color-default: var(--cg-border-default);
+  --color-strong: var(--cg-border-strong);
+  --color-control: var(--cg-border-control);
+  --color-focus: var(--cg-border-focus);
+  --color-selected: var(--cg-border-selected);
+
+  /* Semantic */
+  --color-accent: var(--cg-accent);
+  --color-accent-hover: var(--cg-accent-hover);
+  --color-accent-active: var(--cg-accent-active);
+  --color-accent-muted: var(--cg-accent-muted);
+  --color-accent-fg-muted: var(--cg-accent-fg-muted);
+
+  --color-danger: var(--cg-danger);
+  --color-danger-muted: var(--cg-danger-muted);
+  --color-danger-fg-muted: var(--cg-danger-fg-muted);
+
+  --color-warning: var(--cg-warning);
+  --color-warning-muted: var(--cg-warning-muted);
+  --color-warning-fg-muted: var(--cg-warning-fg-muted);
+
+  --color-success: var(--cg-success);
+  --color-success-muted: var(--cg-success-muted);
+  --color-success-fg-muted: var(--cg-success-fg-muted);
+
+  --color-info: var(--cg-info);
+  --color-info-muted: var(--cg-info-muted);
+  --color-info-fg-muted: var(--cg-info-fg-muted);
+
+  --color-neutral: var(--cg-neutral);
+  --color-neutral-muted: var(--cg-neutral-muted);
+
+  /* Urgency */
+  --color-urgency-critical: var(--cg-urgency-critical);
+  --color-urgency-critical-muted: var(--cg-urgency-critical-muted);
+  --color-urgency-high: var(--cg-urgency-high);
+  --color-urgency-high-muted: var(--cg-urgency-high-muted);
+  --color-urgency-medium: var(--cg-urgency-medium);
+  --color-urgency-medium-muted: var(--cg-urgency-medium-muted);
+  --color-urgency-low: var(--cg-urgency-low);
+  --color-urgency-low-muted: var(--cg-urgency-low-muted);
+
+  /* Status */
+  --color-status-new: var(--cg-status-new);
+  --color-status-triaged: var(--cg-status-triaged);
+  --color-status-verified: var(--cg-status-verified);
+  --color-status-assigned: var(--cg-status-assigned);
+  --color-status-assigned-muted: var(--cg-status-assigned-muted);
+  --color-status-en-route: var(--cg-status-en-route);
+  --color-status-on-scene: var(--cg-status-on-scene);
+  --color-status-on-scene-muted: var(--cg-status-on-scene-muted);
+  --color-status-resolved: var(--cg-status-resolved);
+  --color-status-closed: var(--cg-status-closed);
+  --color-status-cancelled: var(--cg-status-cancelled);
+  --color-status-false-alarm: var(--cg-status-false-alarm);
+  --color-status-false-alarm-muted: var(--cg-status-false-alarm-muted);
+  --color-status-merged: var(--cg-status-merged);
+
+  /* AI confidence */
+  --color-confidence-high: var(--cg-confidence-high);
+  --color-confidence-medium: var(--cg-confidence-medium);
+  --color-confidence-low: var(--cg-confidence-low);
+
+  /* Map placeholder */
+  --color-map-land: var(--cg-map-land);
+  --color-map-block: var(--cg-map-block);
+  --color-map-road-major: var(--cg-map-road-major);
+  --color-map-road-minor: var(--cg-map-road-minor);
+  --color-map-water: var(--cg-map-water);
+
+  /* Typography (doc 04 §3.2) */
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
+    'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'JetBrains Mono', 'SFMono-Regular', 'Cascadia Mono',
+    Menlo, Consolas, monospace;
+
+  --text-2xs: 0.625rem; /* 10/14 */
+  --text-2xs--line-height: 0.875rem;
+  --text-xs: 0.75rem; /* 12/16 */
+  --text-xs--line-height: 1rem;
+  --text-sm: 0.875rem; /* 14/20 */
+  --text-sm--line-height: 1.25rem;
+  --text-base: 1rem; /* 16/24 */
+  --text-base--line-height: 1.5rem;
+  --text-lg: 1.125rem; /* 18/26 */
+  --text-lg--line-height: 1.625rem;
+  --text-xl: 1.25rem; /* 20/28 */
+  --text-xl--line-height: 1.75rem;
+  --text-2xl: 1.5rem; /* 24/32 */
+  --text-2xl--line-height: 2rem;
+  --text-3xl: 1.875rem; /* 30/36 */
+  --text-3xl--line-height: 2.25rem;
+  --text-4xl: 2.25rem; /* 36/40 */
+  --text-4xl--line-height: 2.5rem;
+  --text-5xl: 3rem; /* 48/52 */
+  --text-5xl--line-height: 3.25rem;
+
+  /* Radius (doc 04 §4.2) */
+  --radius-sm: 4px;
+  --radius-control: 6px;
+  --radius-card: 8px;
+  --radius-dialog: 10px;
+  --radius-sheet: 16px;
+  --radius-pill: 9999px;
+
+  /* Icon sizes (doc 04 §4.5) */
+  --spacing-icon-xs: 14px;
+  --spacing-icon-sm: 16px;
+  --spacing-icon-md: 18px;
+  --spacing-icon-lg: 20px;
+  --spacing-icon-xl: 24px;
+  --spacing-icon-2xl: 32px;
+
+  /* Motion (doc 04 §4.6) */
+  --animate-shimmer: shimmer 1400ms linear infinite;
+  --animate-live-flash: live-flash 600ms ease-out;
+  --animate-spin-slow: spin 1.4s linear infinite;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 3. shadcn/ui variable bridge                                                */
+/*                                                                             */
+/* shadcn primitives read --background / --foreground / --primary / … . They   */
+/* are re-pointed at OUR tokens so there is exactly one palette (doc 04 §2.1   */
+/* rule 2). Never edit a shadcn file to change a colour; change it here.       */
+/* -------------------------------------------------------------------------- */
+
+:root {
+  --background: var(--cg-bg-app);
+  --foreground: var(--cg-text-primary);
+
+  --card: var(--cg-bg-surface);
+  --card-foreground: var(--cg-text-primary);
+
+  --popover: var(--cg-bg-elevated);
+  --popover-foreground: var(--cg-text-primary);
+
+  --primary: var(--cg-accent);
+  --primary-foreground: var(--cg-text-on-solid);
+
+  --secondary: var(--cg-bg-elevated);
+  --secondary-foreground: var(--cg-text-primary);
+
+  --muted: var(--cg-bg-elevated);
+  --muted-foreground: var(--cg-text-muted);
+
+  --accent: var(--cg-bg-elevated);
+  --accent-foreground: var(--cg-text-primary);
+
+  --destructive: var(--cg-danger);
+  --destructive-foreground: var(--cg-text-inverse);
+
+  --border: var(--cg-border-default);
+  --input: var(--cg-border-control);
+  --ring: var(--cg-border-focus);
+
+  --radius: var(--cg-radius-control);
+}
+
+/* -------------------------------------------------------------------------- */
+/* 4. Base layer                                                              */
+/* -------------------------------------------------------------------------- */
+
+@layer base {
+  * {
+    border-color: var(--cg-border-default);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    /* iOS zoom is prevented by 16px+ form controls, not by this. */
+  }
+
+  body {
+    background-color: var(--cg-bg-app);
+    color: var(--cg-text-primary);
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* 72ch measure for all prose (doc 04 §3.4) */
+    text-wrap: pretty;
+  }
+
+  /*
+   * Focus: the normative treatment is a TWO-BAND ring (doc 04 §2.11).
+   * A single-colour ring fails on the accent fill (1.33:1). The inner band
+   * guarantees >= 3:1 separation from any fill; the outer band is 8.35-10.25:1
+   * against every surface.
+   */
+  :focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+    box-shadow:
+      0 0 0 2px var(--cg-bg-app),
+      0 0 0 4px var(--cg-border-focus);
+  }
+
+  /* Never `outline: none` without a replacement — see the block above. */
+
+  ::selection {
+    background-color: var(--cg-accent-muted);
+    color: var(--cg-accent-fg-muted);
+  }
+
+  /* Scrollbars: visible and quiet. An invisible scroll region is a
+     discoverability problem on a data-dense operations screen. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--cg-border-strong) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--cg-border-strong);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--cg-border-control);
+  }
+
+  /* Windows High Contrast / forced-colors: let the OS win, and keep the
+     focus ring visible. This is the accessibility escape hatch that matters
+     more than a light brand theme (doc 04 §2.10 point 3). */
+  @media (forced-colors: active) {
+    :focus-visible {
+      outline: 2px solid CanvasText;
+      outline-offset: 2px;
+      box-shadow: none;
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 5. Utilities                                                               */
+/* -------------------------------------------------------------------------- */
+
+@layer utilities {
+  /* Tabular figures for every metric, count, age, distance and timer.
+     Without this a ticking SLA clock reflows its whole row (doc 04 §3.3). */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Reference codes: CG-XXXXXX and requestId (doc 04 §3.3) */
+  .ref-code {
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
+    font-weight: 500;
+    /* Reserve width so a live value cannot shift the column. */
+    min-width: 7ch;
+  }
+
+  .uppercase-label {
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.625rem;
+    line-height: 0.875rem;
+    font-weight: 600;
+  }
+
+  /* 2-line clamp for incident summaries (doc 04 §3.4) */
+  .clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .clamp-1 {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* Scroll regions need a visible affordance: a queue that silently
+     truncates is a lie (doc 04 §11.6, §13.13). */
+  .scroll-x {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  /* Page gutter (doc 04 §4.1) */
+  .page-gutter {
+    padding-inline: 1rem;
+  }
+
+  @media (min-width: 640px) {
+    .page-gutter {
+      padding-inline: 1.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .page-gutter {
+      padding-inline: 2rem;
+    }
+  }
+
+  /* Skeleton shimmer — gradient only when motion is welcome. */
+  .skeleton-fill {
+    background-color: var(--cg-bg-elevated);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .skeleton-fill {
+      background-image: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgb(255 255 255 / 0.04) 50%,
+        transparent 100%
+      );
+      background-size: 200% 100%;
+      animation: var(--animate-shimmer);
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 6. Keyframes                                                              */
+/* -------------------------------------------------------------------------- */
+
+@keyframes shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* Realtime row highlight (US-020 AC1). The non-motion equivalent is a static
+   left rule, applied by the component under prefers-reduced-motion. */
+@keyframes live-flash {
+  0% {
+    background-color: var(--cg-accent-muted);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 7. Reduced motion (NFR-019, doc 04 §4.6)                                   */
+/*                                                                             */
+/* Mandatory. Nothing loops, nothing parallaxes, nothing auto-plays. Each       */
+/* animated element additionally implements a NON-MOTION equivalent — the      */
+/* reduced-motion replacement table is in doc 04 §4.6.                          */
+/* -------------------------------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  /* The live-row flash becomes a static left rule, per doc 04 §4.6. */
+  .animate-live-flash {
+    animation: none !important;
+    background-color: transparent !important;
+    box-shadow: inset 3px 0 0 0 var(--cg-border-selected);
+  }
+
+  /* Skeletons become a static fill, not a sweep. */
+  .skeleton-fill {
+    background-image: none !important;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* 8. Light theme (doc 04 §2.10)                                              */
+/*                                                                             */
+/* v1 ships dark as the default and only *enforced* theme. The light palette   */
+/* below is complete and contrast-measured, and is the contract for the v1.1   */
+/* toggle — it is exposed as an opt-in `.light` scope rather than a theme      */
+/* switcher, because a half-finished theme switcher in an emergency UI is      */
+/* worse than none. DECISION REQUIRED (doc 04 §2.10) on auto/light/dark.       */
+/* -------------------------------------------------------------------------- */
+
+.light {
+  color-scheme: light;
+
+  --cg-bg-app: #f6f8fa;
+  --cg-bg-surface: #ffffff;
+  --cg-bg-elevated: #ffffff;
+  --cg-bg-inset: #f0f3f6;
+  --cg-bg-scrim: rgb(14 22 32 / 0.5);
+
+  --cg-text-primary: #0e1620;
+  --cg-text-secondary: #3d4b5c;
+  --cg-text-muted: #5c6b7c;
+
+  --cg-border-subtle: #d8dee5;
+  --cg-border-default: #d8dee5;
+  --cg-border-strong: #b9c3ce;
+  --cg-border-control: #7a8898;
+  --cg-border-focus: #0b5fbf;
+  --cg-border-selected: #0b6e7a;
+
+  --cg-accent: #0b6e7a;
+  --cg-accent-hover: #095c66;
+  --cg-accent-active: #074b53;
+  --cg-accent-muted: #e2f1f3;
+  --cg-accent-fg-muted: #074b53;
+
+  --cg-danger: #b3261e;
+  --cg-danger-muted: #fde8e6;
+  --cg-danger-fg-muted: #8c1d18;
+
+  --cg-warning: #7a5a00;
+  --cg-warning-muted: #fff3d6;
+  --cg-warning-fg-muted: #5c4400;
+
+  --cg-success: #1b6b45;
+  --cg-success-muted: #e2f3ea;
+  --cg-success-fg-muted: #145235;
+
+  --cg-info: #0b5fbf;
+  --cg-info-muted: #e4effc;
+  --cg-info-fg-muted: #084a94;
+
+  --cg-neutral: #5c6b7c;
+  --cg-neutral-muted: #edf1f5;
+
+  --cg-urgency-critical: #b3261e;
+  --cg-urgency-critical-muted: #fde8e6;
+  --cg-urgency-high: #a2520a;
+  --cg-urgency-high-muted: #fdeedd;
+  --cg-urgency-medium: #7a5a00;
+  --cg-urgency-medium-muted: #fff3d6;
+  --cg-urgency-low: #0b5fbf;
+  --cg-urgency-low-muted: #e4effc;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 9. Print — an emergency report may need to be printed on paper              */
+/* -------------------------------------------------------------------------- */
+
+@media print {
+  body {
+    background: #ffffff;
+    color: #000000;
+  }
+
+  [data-print-hidden] {
+    display: none !important;
+  }
+}

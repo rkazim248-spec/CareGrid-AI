@@ -1,0 +1,102 @@
+{
+  "//": "CareGrid AI — Firestore composite indexes. Phase 2 requires NONE of them; the `users` and `profiles` queries are single-field, which Firestore indexes automatically. The list below is docs/07 §11.2 verbatim, added when Phase 3 creates the incident database. Kept now so the collection is decided before the queries are, not after.",
+  "//index_rule": "docs/07 §11.2 note: array-membership fields (array-contains, in) must come BEFORE range/equality fields. Index 6 is therefore geoCells (array-contains) > status (in) > updatedAt (desc).",
+
+  "indexes": [
+    {
+      "//": "Index 1 — the dispatcher queue default: active incidents, freshest first.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "deletedAt", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "IN" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "//": "Index 2 — a citizen's own reports, newest first.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "reporterUid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "//": "Index 3 — the admin archive: soft-deleted incidents, newest first.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "deletedAt", "order": "DESCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "//": "Index 4 — responder availability, for the candidate list.",
+      "collectionGroup": "responders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "verification", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "lastLocationAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "//": "Index 5 — admin user list, filtered by role and newest first.",
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "role", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "//": "Index 6 — THE GEOSPATIAL ONE. array-contains first, per the field-order rule above.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "geoCells", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "status", "order": "IN" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "//": "Index 7 — cross-incident status history for the admin view.",
+      "collectionGroup": "statusHistory",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "actorUid", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "//": "Index 8 — a responder's own dispatches, newest first.",
+      "collectionGroup": "dispatches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "responderUid", "order": "ASCENDING" },
+        { "fieldPath": "dispatchedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "//": "Index 9 — the notification bell: own unread, newest first.",
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "recipientUid", "order": "ASCENDING" },
+        { "fieldPath": "read", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "//": "Index 10 — the audit log: filtered by action, newest first.",
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "action", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

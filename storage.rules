@@ -1,0 +1,116 @@
+rules_version = '2';
+
+/**
+ * ============================================================================
+ * CareGrid AI — Cloud Storage Security Rules
+ * ============================================================================
+ * Normative source: docs/10_AUTHORIZATION_SECURITY.md §10.2.
+ *
+ * ---------------------------------------------------------------------------
+ * STORAGE HAS NO "PROFILE PHOTO" PATH IN v1
+ * ---------------------------------------------------------------------------
+ * The documented path list is `staging/`, `incidents/`, and `quarantine/`.
+ * `users/{uid}.photoURL` is an `https` URL supplied by the Auth provider, not a
+ * Storage object, so there is nothing for a rule to govern. If a later phase adds
+ * a profile photo it must add a path here AND a rule — an ungated path is
+ * world-readable, which for an emergency platform means a list of who reports
+ * what is public.
+ *
+ * ---------------------------------------------------------------------------
+ * THE SHAPE OF THE RULES
+ * ---------------------------------------------------------------------------
+ * Path-derived ownership. The uploader owns `staging/{uid}/` and nothing else,
+ * the size and content type are capped at write time rather than after, and every
+ * final-evidence path is `if false` because evidence is served by a short-lived
+ * signed URL from the API after a resource-level check.
+ *
+ * ---------------------------------------------------------------------------
+ * WHAT STORAGE RULES CANNOT DO (docs/10 §10.4)
+ * ---------------------------------------------------------------------------
+ * They cannot check an incident's visibility, because visibility lives in a
+ * Firestore document and rules cannot join across services. So "can this person
+ * see this evidence" is answered by the API, which issues the signed URL. These
+ * rules stop DIRECT path guessing — the attacker who knows an `incidentId` and
+ * tries to read `incidents/{id}/...` directly gets `false` regardless of who
+ * they are.
+ */
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function mine(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isOps() {
+      return signedIn()
+        && request.auth.token.role in ['dispatcher', 'admin'];
+    }
+
+    /* ===================================================================== */
+    /* Staging — where a direct client upload lands (Phase 5)                */
+    /* ===================================================================== */
+
+    /**
+     * `staging/{uid}/{mediaId}.{ext}`
+     *
+     * The uploader reads and writes only their own directory. Nobody else, so a
+     * user who guesses another uid gets nothing.
+     *
+     * The size and content-type caps are the reason this path exists at all:
+     * `POST /api/uploads/sign` is supposed to check them, but a rule is the only
+     * check a determined client cannot skip, because it runs whether or not the
+     * client called the API first. An unbounded write rule here would make the
+     * 15 MB cap a suggestion.
+     */
+    match /staging/{uid}/{mediaId}.{ext} {
+      allow read: if mine(uid);
+
+      // The parentheses are load-bearing. Written as
+      // `mine && size && image || mine && size && audio` the `&&` binds tighter
+      // than `||`, which happens to work — but only by accident, and an
+      // accidental precedence in a size limit is a size limit that will be
+      // removed by someone tidying the file.
+      allow write: if mine(uid)
+        && request.resource.size <= 15 * 1024 * 1024
+        && (request.resource.contentType.matches('image/(jpeg|png|webp)')
+            || request.resource.contentType.matches('audio/(webm|mp4|mpeg)'));
+
+      allow delete: if mine(uid);
+    }
+
+    /* ===================================================================== */
+    /* Final evidence — server-written, served by signed URL                */
+    /* ===================================================================== */
+
+    /**
+     * `incidents/{incidentId}/{sub}/{rid}/{mediaId}.{ext}`
+     *
+     * `if false` for everyone. Visibility here is per-incident and would need a
+     * Firestore read, which rules cannot do. So the API decides and issues a
+     * short-lived signed URL (900 s, per `UPLOAD_SIGNED_URL_TTL_SEC`); this rule
+     * exists to make sure a client holding a valid `incidentId` cannot bypass
+     * that decision by constructing the path themselves.
+     */
+    match /incidents/{incidentId}/{sub}/{rid}/{mediaId}.{ext} {
+      allow read, write, delete: if false;
+    }
+
+    /** Rejected uploads awaiting review. Nobody reads them from a client. */
+    match /quarantine/{mediaId}.{ext} {
+      allow read, write, delete: if false;
+    }
+
+    /* ===================================================================== */
+    /* DENY BY DEFAULT                                                       */
+    /* ===================================================================== */
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
