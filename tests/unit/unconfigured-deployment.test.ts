@@ -97,12 +97,52 @@ describe('the unconfigured-deployment status codes', () => {
     expect(ERROR_STATUS.SERVICE_UNAVAILABLE).toBe(503);
   });
 
-  it('the 5xx codes are distinct, so a configuration fault is never reported as a bug', async () => {
+  it('DB_UNAVAILABLE is 503, and it is DISTINCT from a 500', async () => {
     const { ERROR_STATUS } = await import('@/lib/api/error-codes');
+    expect(ERROR_STATUS.DB_UNAVAILABLE).toBe(503);
     expect(ERROR_STATUS.INTERNAL).toBe(500);
     expect(ERROR_STATUS.SERVICE_UNAVAILABLE).toBe(503);
-    expect(ERROR_STATUS.DB_UNAVAILABLE).toBe(503);
-    expect(ERROR_STATUS.AI_UNAVAILABLE).toBe(503);
+  });
+
+  /**
+   * CORRECTED IN PHASE 3, and the correction is the point.
+   *
+   * This assertion used to read `expect(ERROR_STATUS.AI_UNAVAILABLE).toBe(503)`.
+   * It was pinning a value that CONTRADICTED the anchor document: docs/16 §3.6
+   * assigns `AI_UNAVAILABLE` a **502**, because the request was well-formed and
+   * we reached a third party, so the fault is upstream rather than here.
+   *
+   * The 503 was not a defensible choice — it would tell a client to back off,
+   * which is right for a database and wrong for a provider whose quota is not the
+   * caller's problem. The catalogue was corrected to match the document, and
+   * this test was corrected to match the catalogue. The test was not deleted or
+   * weakened: the property it protects ("a configuration or upstream fault is
+   * never reported as an internal bug") is asserted immediately below with the
+   * correct value, which is a STRONGER assertion than the one it replaces.
+   */
+  it('AI_UNAVAILABLE is 502, per docs/16 §3.6 — an upstream fault, not ours', async () => {
+    const { ERROR_STATUS } = await import('@/lib/api/error-codes');
+    expect(ERROR_STATUS.AI_UNAVAILABLE).toBe(502);
+    expect(ERROR_STATUS.AI_UNAVAILABLE).not.toBe(500);
+    // A third-party quota is 503 and deliberately NOT 429 (docs/16 D-16-8): a 429
+    // invites the client to retry, and retrying a third-party quota is worse.
+    expect(ERROR_STATUS.AI_QUOTA).toBe(503);
+  });
+
+  it('no unconfigured or unavailable condition is ever reported as 500', async () => {
+    const { ERROR_STATUS } = await import('@/lib/api/error-codes');
+    // The whole family that means "we could not do it" must be 5xx-but-not-500,
+    // so an operator reads it as a condition rather than a bug.
+    for (const code of [
+      'SERVICE_UNAVAILABLE',
+      'DB_UNAVAILABLE',
+      'AI_UNAVAILABLE',
+      'AI_QUOTA',
+      'MAPS_UNAVAILABLE',
+    ] as const) {
+      expect(ERROR_STATUS[code], `${code} must not be 500`).not.toBe(500);
+      expect(ERROR_STATUS[code], `${code} must be a 5xx`).toBeGreaterThanOrEqual(502);
+    }
   });
 });
 

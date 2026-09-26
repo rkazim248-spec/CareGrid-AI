@@ -4,7 +4,7 @@ out/
 build/
 dist/
 
-# Environment — never commit a real secret (docs/21_ENVIRONMENT_VARIABLES.md §1)
+# Environment — never commit a real secret (docs/21 §1)
 .env
 .env.local
 .env.development.local
@@ -12,6 +12,25 @@ dist/
 .env.production.local
 .env*.local
 !.env.example
+
+# Private credentials — never in version control, whatever it is called.
+# The Firebase service account is the highest-value credential in this project:
+# the Admin SDK bypasses Firestore Security Rules entirely (docs/22 §2), so a
+# leaked key is total access to every document. A `.json` is not sufficient
+# protection — a PEM with a different extension is the same key.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*service-account*.json
+*serviceAccount*.json
+firebase-adminsdk-*.json
+gcp-service-account*.json
+google-services.json
+**/credentials*.json
+**/secrets*.json
 
 # Test / tooling output
 coverage/
@@ -28,3 +47,6 @@ Thumbs.db
 .idea/
 *.log
 npm-install.log
+
+# Deployment — the Vercel CLI link file records the project id and org id.
+.vercel/

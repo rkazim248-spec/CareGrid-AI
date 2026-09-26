@@ -11,22 +11,47 @@
  * account key.
  *
  * The eslint `no-restricted-imports` rule (docs/32) bans `@/lib/server/**` and
- * `@/lib/firebase/**` from client-reachable files as a second, independent
+ * `@/lib/env.server` from client-reachable files as a second, independent
  * check. Two mechanisms, one invariant: secrets never reach the browser.
  *
  * ---------------------------------------------------------------------------
- * THE FOUR SECRETS, AND WHAT EACH ONE UNLOCKS
+ * THREE TIERS, AND THE DIFFERENCE MATTERS
  * ---------------------------------------------------------------------------
- * | Variable                | Unlocks                                     | Blast radius if leaked |
- * |-------------------------|---------------------------------------------|-----------------------|
- * | `FIREBASE_PRIVATE_KEY`  | Bypasses Firestore Security Rules entirely  | Total: every document  |
- * | `GEMINI_API_KEY`        | Spends the project's Gemini quota          | Bounded, rate-limited |
- * | `GOOGLE_MAPS_SERVER_KEY`| Billed geocoding and distance-matrix calls  | Bounded               |
- * | `CRON_SECRET`           | Lets a caller run maintenance jobs         | Job execution         |
+ * `getServerEnv()` is the **required** tier. It throws when a variable the
+ * server cannot work without is missing, and it is called on the CSRF path of
+ * every state-changing request.
+ *
+ * The **optional** tier is everything a future integration needs and this
+ * phase does not: `GEMINI_API_KEY`, `GOOGLE_MAPS_SERVER_KEY`, the Twilio
+ * triple, `CRON_SECRET`, `IP_HASH_SALT`. These are read through
+ * `serverIntegrationConfig()`, which NEVER throws, because a missing Gemini
+ * key must not stop a citizen from signing in or reading their own reports.
+ * The integration that needs a key asks `isGeminiConfigured()` first and
+ * answers `503 AI_UNAVAILABLE` when it is not there.
+ *
+ * `NEXT_PUBLIC_FIREBASE_USE_EMULATORS === 'true'` in a **production** build is
+ * the third tier: not a missing value but a dangerous one, so
+ * `assertServerInvariants()` refuses to let it stand.
+ *
+ * ---------------------------------------------------------------------------
+ * THE SECRETS, AND WHAT EACH ONE UNLOCKS (docs/21 §6)
+ * ---------------------------------------------------------------------------
+ * | Variable                  | Unlocks                                       | Blast radius if leaked |
+ * |---------------------------|-----------------------------------------------|-----------------------|
+ * | `FIREBASE_PRIVATE_KEY`    | Bypasses Firestore Security Rules entirely    | Total: every document  |
+ * | `FIREBASE_CLIENT_EMAIL`    | Half of the Admin SDK credential pair          | Total, with the key    |
+ * | `GEMINI_API_KEY`          | Spends the project's Gemini quota             | Bounded, rate-limited |
+ * | `GOOGLE_MAPS_SERVER_KEY`  | Billed geocoding and distance-matrix calls    | Bounded               |
+ * | `TWILIO_AUTH_TOKEN`       | Sends SMS/WhatsApp at the project's cost       | Billed                |
+ * | `CRON_SECRET`             | Lets a caller run maintenance jobs            | Job execution         |
+ * | `IP_HASH_SALT`            | Makes a stored IP hash linkable                | Pseudonymity gone     |
  *
  * There is NO login route and NO custom-token minting (docs/10 §3.2, §12.3), so
  * the private key is used for exactly one thing: verifying an ID token the
  * browser already holds, and reading/writing Firestore from a trusted server.
+ *
+ * Nothing in this file ever prints, returns, or logs a value. A boot error
+ * names the VARIABLE and never its value (docs/10 §16.3, control 8).
  */
 
 /** Build-time poison pill. Throws if a client bundle reaches this module. */
@@ -50,7 +75,12 @@ function required(name: string, hint: string): string {
   return value.trim();
 }
 
-function requiredBoolean(name: string, fallback: boolean): boolean {
+function optionalString(name: string, fallback = ''): string {
+  const value = process.env[name];
+  return value === undefined || value.trim() === '' ? fallback : value.trim();
+}
+
+function optionalBoolean(name: string, fallback: boolean): boolean {
   const raw = process.env[name]?.trim().toLowerCase();
   if (raw === undefined || raw === '') return fallback;
   if (raw === 'true' || raw === '1') return true;
@@ -58,17 +88,11 @@ function requiredBoolean(name: string, fallback: boolean): boolean {
   throw new ServerEnvError(name, `Expected "true" or "false", got "${raw}".`);
 }
 
-function requiredNumber(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
-  if (raw === undefined || raw === '') return fallback;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) {
-    throw new ServerEnvError(name, `Expected a number, got "${raw}".`);
-  }
-  return parsed;
-}
-
 const where = 'See docs/21_ENVIRONMENT_VARIABLES.md and .env.example.';
+
+/* ========================================================================== */
+/* Tier 1 — required                                                          */
+/* ========================================================================== */
 
 /**
  * Whether the Admin SDK credentials are present.
@@ -111,11 +135,11 @@ export function getServerEnv() {
     isProduction: process.env.NODE_ENV === 'production',
     appUrl: required('NEXT_PUBLIC_APP_URL', 'Used for the CSRF origin set.'),
     /** docs/10 §3.6. A privileged action needs a token issued within this window. */
-    reauthWindowSec: requiredNumber('REAUTH_WINDOW_SEC', 300),
+    reauthWindowSec: boundedNumber('REAUTH_WINDOW_SEC', 300, 30, 3600),
     /** docs/16 §1.9. Null means "unlimited" for endpoints that do not set one. */
-    logLevel: process.env.LOG_LEVEL?.trim() ?? 'info',
-    maintenanceEnabled: requiredBoolean('ENABLE_MAINTENANCE_JOBS', false),
-    seedEnabled: requiredBoolean('ALLOW_SEED', false),
+    logLevel: optionalString('LOG_LEVEL', 'info'),
+    maintenanceEnabled: optionalBoolean('ENABLE_MAINTENANCE_JOBS', false),
+    seedEnabled: optionalBoolean('ALLOW_SEED', false),
   } as const;
 }
 
@@ -131,3 +155,325 @@ export function allowedOrigins(): Set<string> {
   const list = new Set<string>([appUrl, new URL(appUrl).origin]);
   return list;
 }
+
+/* ========================================================================== */
+/* Tier 2 — optional integration configuration (NEVER throws)                  */
+/* ========================================================================== */
+
+/**
+ * One integration's readiness, and the sentence that explains a refusal.
+ *
+ * `configured: false` is a NORMAL state in this phase, not a fault. Gemini,
+ * Google Maps server key, and Twilio all ship unconfigured, and the whole point
+ * of Phase 3 is that the application runs correctly that way.
+ *
+ * The `problem` sentence ALWAYS names the variables it is about. An admin page
+ * that says "the AI provider is not configured" makes the reader open the
+ * documentation; one that says "GEMINI_API_KEY is not set" does not. A variable
+ * NAME is not a secret — a value would be, and a name is exactly what an
+ * operator needs.
+ */
+export type IntegrationStatus = {
+  /** The variable NAME, never its value. docs/10 §16.3, control 7. */
+  readonly required: readonly string[];
+  readonly configured: boolean;
+  /** `null` when configured. A renderable sentence when not. */
+  readonly problem: string | null;
+};
+
+const how = 'Add it to .env.local for local work, or to the Vercel project environment. ' + where;
+
+function statusFor(names: readonly string[], lead: string, tail: string): IntegrationStatus {
+  const configured = names.every((name) => {
+    const value = process.env[name];
+    return typeof value === 'string' && value.trim() !== '';
+  });
+  if (configured) return { required: names, configured: true, problem: null };
+  const verb = names.length === 1 ? 'is' : 'are';
+  return {
+    required: names,
+    configured: false,
+    problem: `${names.join(' and ')} ${verb} not set. ${lead} ${tail} ${how}`,
+  };
+}
+
+
+/* --- Gemini — docs/21 §2, read by services/integrations/gemini ------------ */
+
+/** The exact variable names Gemini needs, in the order a reader should set them. */
+export const GEMINI_REQUIRED_VARS = ['GEMINI_API_KEY'] as const;
+
+export function geminiStatus(): IntegrationStatus {
+  return statusFor(GEMINI_REQUIRED_VARS, 'AI triage is therefore unavailable.', 'Every report is still recorded and reviewed by a person.');
+}
+
+export function isGeminiConfigured(): boolean {
+  return geminiStatus().configured;
+}
+
+/**
+ * The Gemini tunables.
+ *
+ * Every field has a documented default (docs/21 §2) so a build with none of
+ * them set behaves exactly as docs/09 §7 specifies for a missing key: triage
+ * is skipped and the deterministic fallback runs. No field here is a secret.
+ */
+export function geminiConfig() {
+  return {
+    apiKey: optionalString('GEMINI_API_KEY'),
+    model: optionalString('GEMINI_MODEL', 'gemini-2.5-flash'),
+    timeoutMs: tunableNumber('GEMINI_TIMEOUT_MS', 20_000, 1_000, 120_000),
+    maxRetries: tunableNumber('GEMINI_MAX_RETRIES', 3, 0, 5),
+    rpmLimit: tunableNumber('GEMINI_RPM_LIMIT', 8, 0, 1_000),
+    rpdLimit: tunableNumber('GEMINI_RPD_LIMIT', 200, 0, 100_000),
+    audioEnabled: optionalBoolean('GEMINI_AUDIO_ENABLED', true),
+    /** FR-024. Below this the UI says "needs review". */
+    confidenceReviewThreshold: tunableNumber('AI_CONFIDENCE_REVIEW_THRESHOLD', 0.6, 0, 1),
+  } as const;
+}
+
+/* --- Google Maps — docs/21 §2, docs/12 ------------------------------------ */
+
+export const GOOGLE_MAPS_SERVER_VARS = ['GOOGLE_MAPS_SERVER_KEY'] as const;
+
+export function googleMapsStatus(): IntegrationStatus {
+  return statusFor(
+    GOOGLE_MAPS_SERVER_VARS,
+    'Server-side geocoding and distance lookups are therefore unavailable.',
+    'The map still renders from stored coordinates, and the list view is unaffected.',
+  );
+}
+
+export function isGoogleMapsServerConfigured(): boolean {
+  return googleMapsStatus().configured;
+}
+
+export function googleMapsConfig() {
+  return {
+    serverKey: optionalString('GOOGLE_MAPS_SERVER_KEY'),
+    region: optionalString('GOOGLE_MAPS_REGION', 'IN'),
+    defaultCenter: optionalString('GOOGLE_MAPS_DEFAULT_CENTER', '17.4478,78.4874'),
+    localRpmLimit: tunableNumber('GEOCODING_RPM_LOCAL', 30, 0, 1_000),
+  } as const;
+}
+
+/* --- Twilio — docs/13, docs/21 §2 ---------------------------------------- */
+
+export const TWILIO_VARS = [
+  'TWILIO_ACCOUNT_SID',
+  'TWILIO_AUTH_TOKEN',
+  'TWILIO_WHATSAPP_NUMBER',
+] as const;
+
+export function twilioStatus(): IntegrationStatus {
+  return statusFor(
+    TWILIO_VARS,
+    'SMS and WhatsApp are therefore unavailable.',
+    'In-app notifications are unaffected and every user-visible alert still works.',
+  );
+}
+
+export function isTwilioConfigured(): boolean {
+  return twilioStatus().configured;
+}
+
+export function twilioConfig() {
+  return {
+    accountSid: optionalString('TWILIO_ACCOUNT_SID'),
+    authToken: optionalString('TWILIO_AUTH_TOKEN'),
+    whatsappNumber: optionalString('TWILIO_WHATSAPP_NUMBER'),
+    smsEnabled: optionalBoolean('ENABLE_SMS_NOTIFICATIONS', false),
+    whatsappEnabled: optionalBoolean('ENABLE_WHATSAPP_NOTIFICATIONS', false),
+    retryLimit: tunableNumber('NOTIFICATION_RETRY_LIMIT', 2, 0, 5),
+  } as const;
+}
+
+/* --- Operations ---------------------------------------------------------- */
+
+export function cronSecret(): string | null {
+  const value = optionalString('CRON_SECRET');
+  return value === '' ? null : value;
+}
+
+export function ipHashSalt(): string | null {
+  const value = optionalString('IP_HASH_SALT');
+  return value === '' ? null : value;
+}
+
+/**
+ * The global request budget. docs/21 §2, default 15000.
+ *
+ * Applied by `lib/server/route.ts` to the handler as a whole. A handler that
+ * exceeds it is converted to `504 TIMEOUT`, so a hanging Gemini call becomes a
+ * clean error rather than a platform-level 504 with no body.
+ */
+export function requestTimeoutMs(): number {
+  return tunableNumber('REQUEST_TIMEOUT_MS', 15_000, 1_000, 120_000);
+}
+
+/**
+ * The rate-limit store, per docs/21 §2 and docs/10 §17.1.
+ *
+ * `memory` is DOCUMENTED AS UNSAFE and is refused in production rather than
+ * honoured. A Vercel function is a single-use process: an in-process counter is
+ * multiplied by the instance count and resets on every cold start, so it is not
+ * a limit at all. Refusing loudly beats pretending.
+ */
+export function rateLimitConfig() {
+  const store = optionalString('RATE_LIMIT_STORE', 'firestore');
+  return {
+    store: store === 'memory' ? ('memory' as const) : ('firestore' as const),
+    windowSec: tunableNumber('RATE_LIMIT_WINDOW_SEC', 3600, 1, 86_400),
+    /** docs/21 §2: read `x-forwarded-for` on Vercel, where the proxy is ours. */
+    trustProxy: optionalBoolean('RATE_LIMIT_TRUST_PROXY', true),
+  } as const;
+}
+
+/* ========================================================================== */
+/* Tier 3 — the whole picture                                                 */
+/* ========================================================================== */
+
+/**
+ * Every integration's readiness, for `GET /api/admin/system/health`.
+ *
+ * NAMES only, never values. An admin endpoint is the one place where a
+ * configuration summary is appropriate, and even there the value of a secret is
+ * never serialised — a leaked health endpoint is how a database URL ends up in
+ * a screenshot (docs/10 §16.3, control 7).
+ */
+export function integrationStatus(): {
+  readonly firebaseAdmin: IntegrationStatus;
+  readonly gemini: IntegrationStatus;
+  readonly googleMapsServer: IntegrationStatus;
+  readonly twilio: IntegrationStatus;
+  readonly cron: IntegrationStatus;
+} {
+  return {
+    firebaseAdmin: {
+      required: ['FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'FIREBASE_PRIVATE_KEY'],
+      configured: isAdminConfigured(),
+      problem: adminConfigurationProblem(),
+    },
+    gemini: geminiStatus(),
+    googleMapsServer: googleMapsStatus(),
+    twilio: twilioStatus(),
+    cron: statusFor(
+      ['CRON_SECRET'],
+      'The scheduled jobs are therefore refused.',
+      'This is expected in local development and required in production.',
+    ),
+  };
+}
+
+/**
+ * Configuration mistakes that must STOP the server, as sentences.
+ *
+ * Returns a list rather than throwing, because there are two different callers
+ * with two different needs: the Admin SDK bootstrap wants to throw (it cannot
+ * work), and the admin health route wants to LIST them (that is its job).
+ *
+ * Each entry is a `DECISION REQUIRED`-grade condition, not a style preference:
+ *
+ *   1. `ALLOW_SEED=true` in production would let `scripts/seed.ts` write demo
+ *      data into the live project (docs/21 §4, FR-147).
+ *   2. `RATE_LIMIT_STORE=memory` on a stateless platform is not a limit
+ *      (docs/10 §17.1).
+ *   3. A `NEXT_PUBLIC_*` value containing `-----BEGIN` is a service-account key
+ *      that has been given a browser-visible name, which publishes it
+ *      (docs/21 §6).
+ */
+export function serverEnvProblems(): string[] {
+  const problems: string[] = [];
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  if (isProduction && optionalBoolean('ALLOW_SEED', false)) {
+    problems.push(
+      'ALLOW_SEED is true in a production build. Seeding writes demo incidents into the live project; set it to false.',
+    );
+  }
+
+  if (optionalString('RATE_LIMIT_STORE', 'firestore') === 'memory') {
+    problems.push(
+      'RATE_LIMIT_STORE=memory. A serverless function is a single-use process, so an in-memory counter resets on every cold start and is multiplied by the instance count. Use firestore.',
+    );
+  }
+
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!name.startsWith('NEXT_PUBLIC_')) continue;
+    if (typeof value === 'string' && value.includes('-----BEGIN')) {
+      problems.push(
+        `${name} contains a private key block. Anything prefixed NEXT_PUBLIC_ is published to the browser.`,
+      );
+    }
+  }
+
+  if (isProduction) {
+    const appUrl = optionalString('NEXT_PUBLIC_APP_URL');
+    if (appUrl !== '' && !appUrl.startsWith('https://')) {
+      problems.push(
+        'NEXT_PUBLIC_APP_URL is not https in production, which makes the CSRF origin check bypassable by a network attacker.',
+      );
+    }
+  }
+
+  return problems;
+}
+
+/**
+ * Throw when the deployment is misconfigured in a way that cannot be worked
+ * around. Called once per server instance from the Admin SDK bootstrap.
+ */
+export function assertServerInvariants(): void {
+  const problems = serverEnvProblems();
+  if (problems.length === 0) return;
+  throw new ServerEnvError(
+    'server configuration',
+    problems.join(' '),
+  );
+}
+
+/* ========================================================================== */
+/* Helpers                                                                    */
+/* ========================================================================== */
+
+/**
+ * A numeric variable that THROWS on a malformed value.
+ *
+ * Used only for a SECURITY-relevant number, where a typo must be loud. An
+ * operator who believes they have set `REAUTH_WINDOW_SEC=300` and has not should
+ * be told, not silently given the default.
+ */
+function boundedNumber(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name]?.trim();
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new ServerEnvError(name, `Expected a number, got "${raw}".`);
+  }
+  return Math.min(max, Math.max(min, parsed));
+}
+
+/**
+ * A numeric integration tunable that FALLS BACK on a malformed value.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS SEPARATELY FROM `boundedNumber`
+ * ---------------------------------------------------------------------------
+ * Because the two failure modes are different. A malformed `REAUTH_WINDOW_SEC`
+ * is a security setting an operator believes they have configured, so it must be
+ * loud. A malformed `GEMINI_TIMEOUT_MS=20000;` — a stray semicolon from a
+ * dashboard paste — is a tuning value on a path that must not be able to fail a
+ * request, so it degrades to the documented default.
+ *
+ * One function for both would mean choosing between two bad outcomes: either a
+ * typo silently disables a security window, or a typo takes down an emergency
+ * report. Splitting them means neither can happen.
+ */
+function tunableNumber(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name]?.trim();
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+

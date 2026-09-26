@@ -978,12 +978,163 @@ Unauthenticated liveness probe. `{ "status": "ok", "uptimeSec": 4210, "version":
 
 ---
 
-## 13. Amendment history
-
-| Amendment | Date | Change | Reason |
-| --- | --- | --- | --- |
-| A-1 | v1.0.1 | **Added** `POST /api/incidents/:id/reports` (§3.12), `GET /api/incidents/by-reference` (§3.13), `GET /api/dashboard/summary` (§7.3), `POST /api/geocode/reverse` (§8.4), `GET /api/geocode/forward` (§8.5). §8 retitled "Uploads & location services". The maintenance gate clarified to `ENABLE_MAINTENANCE_JOBS`. | Consistency audit found FR-011, FR-012, FR-033, FR-035, FR-078, and FR-087 with no endpoint to satisfy them — a required screen (`/track`) and a required dashboard element (KPI tiles) had no API |
-| A-2 | v1.0.1 | `new → triaged` is now `system`/dispatcher/admin, not dispatcher/admin only, matching [07](./07_DATABASE_SCHEMA.md) §4.3 and [09](./09_AI_GEMINI_SPECIFICATION.md) §6.4 | The AI triage step writes this transition; the original table made it unreachable |
-| A-3 | v1.0.1 | `incidents.dispatchedAt` added to the incident document ([07](./07_DATABASE_SCHEMA.md) §4.1) so `meanTimeToDispatchSec` is computable without a join | [14](./14_ANALYTICS_SPECIFICATION.md) needs it inside the 500-doc live-scan budget |
+| A-4 | v1.0.3 | **Added** `GET /api/auth/me`, a **documented alias** of `GET /api/me` (14.2). Byte-identical `data`; both call `services/auth/account.ts` -> `getMe`. **Added** `POST /api/ai/triage` as a **Phase 3 architecture probe** (14.1), returning the documented `triageSource: 'fallback'` outcome until Phase 4. **Row 52** (`GET /api/admin/system/health`) is **implemented** and gated on matrix row 52 (`r52_listUsers`, admin only) rather than a hand-written role array. | The alias was requested in the Phase 3 brief. [32 MUST NOT 2](./32_AI_CODING_AGENT_RULES.md) requires an amendment in the same change, and an undocumented second path to the same contract is how two implementations of a security-relevant response drift. The probe exists so that "the AI integration fails gracefully" is **executable** rather than asserted |
+| A-5 | v1.0.3 | The 401/403/404 contract in [10 6.4](./10_AUTHORIZATION_SECURITY.md) is **confirmed** and now mechanically enforced. `TIMEOUT` (504) and `MAPS_UNAVAILABLE` (502) added to the [16](./16_ERROR_HANDLING.md) catalogue. `AI_UNAVAILABLE` corrected from 503 to **502** per [16 3.6](./16_ERROR_HANDLING.md). `NOTIFICATION_DISABLED` (422) added - it was documented in [30.3 A6.1](./30.3_PHASE_2_DOC_AMENDMENTS.md) and thrown by `PATCH /api/me`, but **missing from the catalogue**, so it returned 500. | Phase 3 found three catalogue faults by writing a test for each. A code whose status is wrong makes **every** route that emits it wrong, and no per-route test catches it. Full list in 14.5 |
 
 > Every amendment is recorded here rather than applied silently. A reader holding v1.0 of this document should be able to tell exactly what changed and why.
+
+---
+
+## 14. Phase 3 additions (v1.0.3)
+
+Three endpoints exist in the codebase that this document did not previously describe. They are
+documented here rather than left as an undocumented surface. The full rationale is in
+[30.4 Phase 3 Foundation](./30.4_PHASE_3_FOUNDATION.md), and the connection points for every later
+phase are in [34 Backend Integration Points](./34_BACKEND_INTEGRATION_POINTS.md).
+
+### 14.1 `POST /api/ai/triage` - the Gemini architecture probe
+
+| Aspect | Value |
+| --- | --- |
+| Auth | `requireUser`; the account-status gate applies |
+| Authorization | Matrix **row 13** (`r13_readAiTriagePanel`). dispatcher/admin `full`, responder `readonly`, citizen `denied` |
+| Rate limit | 20 / hour / uid |
+| CSRF | yes (non-GET) |
+| Purpose | Exercise the whole pipeline against the `TriageProvider` seam and prove the FR-029 failure path |
+
+**Request** - `validators/ai.ts` -> `aiTriageProbeBodySchema`, `.strict()`:
+
+| Field | Type | Bound |
+| --- | --- | --- |
+| `text` | string | 20-2000 chars (FR-003's own bounds) |
+| `language` | string | BCP-47, max 35, defaults `en` |
+| `locationHint` | string? | max 200. **No coordinate field exists** - [09 1.2](./09_AI_GEMINI_SPECIFICATION.md) forbids the model from producing one |
+| `imageCount` | number | 0-3. A COUNT, never a URL and never a byte count |
+| `audioCount` | number | 0-1 (FR-006) |
+
+An unknown key is a `400`, including `role`, `uid`, `model`, and `promptVersion`.
+
+**Response** `200`:
+
+```json
+{ "success": true,
+  "data": {
+    "triage": {
+      "source": "fallback", "category": null, "urgency": null, "summary": null,
+      "safetyFlags": [], "confidence": null,
+      "rationale": "AI triage was unavailable, so a person will review this report.",
+      "needsReview": true,
+      "providerName": "gemini", "model": "gemini-2.5-flash", "promptVersion": "triage-v3"
+    },
+    "providerAvailable": false
+  },
+  "meta": { "requestId": "req_7Kd2mQ9xL4n" } }
+```
+
+**That is the real response in this build**, not a mock and not an illustration: the provider has no
+key, so there is no client, so `triageIncident()` returns the documented fallback. There is no
+`if (DEV)` branch anywhere in the path, and `scripts/security-check.cjs` fails the build if one
+appears.
+
+**Errors:** `401` unauthenticated - `403 FORBIDDEN` citizen - `400 VALIDATION_FAILED` -
+`413 REQUEST_TOO_LARGE` - `415 UNSUPPORTED_MEDIA_TYPE` - `429 RATE_LIMIT_EXCEEDED` with
+`Retry-After` - `503 SERVICE_UNAVAILABLE` when the Admin SDK is unconfigured.
+
+**This route is a probe, not a feature.** Phase 4 makes it return a real assessment by
+implementing the adapter. See [34 1](./34_BACKEND_INTEGRATION_POINTS.md).
+
+### 14.2 `GET /api/auth/me` - a documented alias
+
+Byte-identical to `GET /api/me` (2.1), including the exemption from the account-status gate.
+Unauthenticated: `401 AUTH_REQUIRED`. `data` is the same `{ user, profile, permissions }`.
+
+`GET /api/me` remains the canonical path and remains what the client calls. The alias exists so
+that adding a path to this API is a fifteen-line file rather than a copy of a security-relevant
+handler, and it is recorded here so it is a contract rather than a mystery route somebody
+eventually re-implements.
+
+### 14.3 `GET /api/admin/system/health` - row 52, implemented
+
+Admin only, gated on **matrix row 52** (`r52_listUsers`) rather than
+`requireRole(user, ['admin'])`. A capability name is a compile error if the row is removed, and a
+hand-written role array can disagree with the matrix silently. Rate limit 30/min.
+
+Returns integration readiness and any configuration **faults**. It reports variable **NAMES**,
+booleans, and sentences. It never reports a value: a health page that echoes a secret is how a
+credential ends up in a screenshot pasted into an issue ([10 16.3](./10_AUTHORIZATION_SECURITY.md),
+control 7).
+
+```json
+{ "success": true,
+  "data": {
+    "status": "ok", "service": "CareGrid AI API", "version": "0.3.0-phase3",
+    "timestamp": "2026-09-26T10:05:31.000Z", "uptimeSec": 143,
+    "providers": [
+      { "provider": "firebase-admin", "configured": false,
+        "requiredVars": ["FIREBASE_PROJECT_ID", "FIREBASE_CLIENT_EMAIL", "FIREBASE_PRIVATE_KEY"],
+        "problem": "..." },
+      { "provider": "gemini", "configured": false,
+        "requiredVars": ["GEMINI_API_KEY"], "problem": "..." }
+    ],
+    "problems": [],
+    "settings": { "gemini": {}, "googleMaps": {}, "twilio": {} }
+  },
+  "meta": { "requestId": "req_7Kd2mQ9xL4n" } }
+```
+
+A **dark Gemini key is not a `problem`**. It is the expected state of this build, it is reported in
+`providers[]`, and calling it a problem would train an operator to ignore the field.
+`problems[]` is for faults that change behaviour: `ALLOW_SEED` in production,
+`RATE_LIMIT_STORE=memory`, a `NEXT_PUBLIC_*` value containing a private key, an http app URL in
+production.
+
+It does **not** ping Firestore, Gemini, Maps, or Twilio. [06 1.1](./06_BACKEND_ARCHITECTURE.md)
+budgets each sub-check at 1.5 s, and a health check that blocks on four third parties reports
+their outages as ours. Phase 9 adds the live pings with the documented 30 s cache.
+
+### 14.4 The public `/api/health`, extended
+
+`GET /api/health` now also returns `service`, `uptimeSec`, and `timestamp` alongside the
+existing `status` and `version`. An older cached client keeps working: a response schema drops
+an unknown key rather than failing (the `.strict()` rule is for REQUESTS, where an unknown key
+means a version mismatch the caller should hear about).
+
+It still reads **no** database and reports **nothing** about server configuration - a public
+endpoint that enumerates which secrets are missing is a reconnaissance endpoint. `uptimeSec` is
+the only visible signal of the Vercel warm/cold ratio ([06 1.3](./06_BACKEND_ARCHITECTURE.md)) and
+reveals nothing: it is a duration since process start.
+
+It sets `Cache-Control: public, max-age=5` instead of the API's blanket `no-store`. It is the
+ONE documented exception ([10 15.1](./10_AUTHORIZATION_SECURITY.md)), because a liveness probe hits
+this on an interval and five seconds is short enough that a restart is visible within a poll.
+
+### 14.5 The error catalogue additions
+
+Full reasoning in [30.4](./30.4_PHASE_3_FOUNDATION.md).
+
+| Code | Status | Why |
+| --- | --- | --- |
+| `NOTIFICATION_DISABLED` | 422 | **Was missing from the catalogue** while being thrown by `PATCH /api/me`, so it returned 500 |
+| `REQUEST_TOO_LARGE` | 413 | above the route's `maxBytes`; the client can act on it by sending less |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | a `multipart/form-data` body on a JSON route |
+| `METHOD_NOT_ALLOWED` | 405 | a handler refusing a verb on a path it does route |
+| `CAPABILITY_DISABLED` | 422 | the capability exists; the deployment has the feature switched off |
+| `RATE_LIMIT_EXCEEDED` | 429 | the documented name; `RATE_LIMITED` is kept, both carry `Retry-After` |
+| `AI_UNAVAILABLE` | **502** | corrected from 503 per [16 3.6](./16_ERROR_HANDLING.md) - an upstream fault, so a client must not back off |
+| `AI_QUOTA` | 503 | a third-party quota is deliberately **not** 429 ([16](./16_ERROR_HANDLING.md) D-16-8): retrying it makes it worse |
+| `MAPS_UNAVAILABLE` | 502 | never fatal; the documented list fallback carries the product |
+| `TIMEOUT` | 504 | the global handler budget in `REQUEST_TIMEOUT_MS` was exceeded |
+
+### 14.6 What is still NOT implemented
+
+Recorded so a reader knows the difference between "not described here" and "not built".
+
+| Endpoint | Phase | Why not |
+| --- | --- | --- |
+| Every `/api/incidents*` route | 4/5 | The create pipeline, the lifecycle table, and the duplicate engine are later phases. `app/api/incidents/` does not exist |
+| `/api/responders*`, `/api/dispatches*` | 5/6 | No service, no route. [34 7](./34_BACKEND_INTEGRATION_POINTS.md) names the exact file each will need |
+| `/api/notifications*`, `/api/uploads*` | 9/5 | The `NotificationChannel` interface exists; the in-app channel and the SDK adapters do not |
+| `/api/analytics*`, `/api/config`, `/api/resources` | 7/8 | No service, no route |
+| `/api/admin/users*`, `/api/admin/audit-logs`, `/api/admin/config` | 4/5/8 | Row 52 is implemented; the rest are not |
+| `/api/cron/[job]` | 9 | `secretMatches()` (constant-time compare) and `CRON_SECRET` exist; the jobs do not |
+| `POST /api/incidents/:id/reports` | - | Still an open `DECISION REQUIRED` in [17](./17_VALIDATION_RULES.md) D-17-10. **Not built, and not documented as existing** |

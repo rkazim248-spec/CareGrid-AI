@@ -52,6 +52,14 @@ export const ERROR_STATUS = {
   INCIDENT_NOT_FOUND: 404,
   RESPONDER_NOT_FOUND: 404,
 
+  /* --- 405 the verb does not exist on this path ------------------------ */
+  /**
+   * Next.js answers this itself for an unrouted verb, but the code is declared
+   * here so a handler that refuses a verb on a path it DOES route (a `GET` on a
+   * write-only route, for instance) speaks the same catalogue.
+   */
+  METHOD_NOT_ALLOWED: 405,
+
   /* --- 409 state conflict ------------------------------------------------ */
   INVALID_STATUS_TRANSITION: 409,
   ALREADY_ROLE: 409,
@@ -59,21 +67,79 @@ export const ERROR_STATUS = {
   ACCOUNT_ALREADY_EXISTS: 409,
   EMAIL_ALREADY_EXISTS: 409,
 
+  /* --- 413 the request itself is too large ----------------------------- */
+  /**
+   * A body above the route's `maxBytes`. Deliberately a 413 and not a 400,
+   * because the client can act on it: a smaller payload. The Vercel platform
+   * cap of 4.5 MB is never the limit we want to hit, so this fires first
+   * (docs/17 §10).
+   */
+  REQUEST_TOO_LARGE: 413,
+
+  /* --- 415 the payload is not a shape this route accepts --------------- */
+  UNSUPPORTED_MEDIA_TYPE: 415,
+
   /* --- 422 well-formed but semantically rejected ------------------------ */
   EMPTY_REPORT: 422,
+  /**
+   * The caller named a capability that does not exist in the 61-row matrix.
+   * `422` per docs/16 §3.3 — the request parsed, and the domain refused the
+   * value. Distinct from `forbidden`, which is `403 FORBIDDEN` (a real
+   * capability this role may never hold).
+   */
   INVALID_CAPABILITY: 422,
   RESOURCE_REQUIRED: 422,
   FEATURE_DISABLED: 422,
   MAINTENANCE_DISABLED: 422,
+  /**
+   * `PATCH /api/me` was asked to enable SMS or WhatsApp when no provider is
+   * configured. Added by Phase 2 and recorded in docs/30.3 §A6.1, but it was
+   * MISSING from this table, so `statusForCode()` fell through to 500 and a
+   * perfectly ordinary profile edit answered "Something went wrong" instead of
+   * naming the field. A catalogue gap is a bug, not a shrug.
+   */
+  NOTIFICATION_DISABLED: 422,
+  /**
+   * A capability exists and the caller has it, but the deployment has the
+   * corresponding feature switched off (`ENABLE_RISK_ZONES`,
+   * `ENABLE_VOICE_REPORTING`). 422 rather than 404: the route is real, the
+   * request was understood, and the answer is a refusal rather than a lie.
+   */
+  CAPABILITY_DISABLED: 422,
 
   /* --- 429 rate limited -------------------------------------------------- */
   RATE_LIMITED: 429,
+  /**
+   * The documented name for a rate-limited request (docs/10 §17.1, docs/16
+   * §3.10). `RATE_LIMITED` is kept because Phase 2's auth routes already emit
+   * it; both are 429 and both carry `Retry-After`, so a client branching on
+   * either behaves identically. Collapsed to one name when the auth routes move
+   * to the Firestore bucket.
+   */
+  RATE_LIMIT_EXCEEDED: 429,
 
-  /* --- 500 / 503 --------------------------------------------------------- */
+  /* --- 500 / 502 / 503 / 504 --------------------------------------------- */
   INTERNAL: 500,
+  /**
+   * An external provider answered 5xx or the network failed after the
+   * documented retries. `502`, not `503`: the request was well-formed and we
+   * reached the provider, so the fault is upstream rather than here. The whole
+   * application must survive this (docs/16 §3.6) — Gemini being down is a
+   * degraded triage path, never a crashed app.
+   */
+  AI_UNAVAILABLE: 502,
+  /** Same shape as AI_UNAVAILABLE: a Maps call failed. Never fatal (docs/16 §3.8). */
+  MAPS_UNAVAILABLE: 502,
   DB_UNAVAILABLE: 503,
   SERVICE_UNAVAILABLE: 503,
-  AI_UNAVAILABLE: 503,
+  /**
+   * A third-party quota was exhausted, so this is deliberately NOT a 429: a 429
+   * invites the client to retry, and retrying a third-party quota makes it
+   * worse (docs/16 D-16-8).
+   */
+  AI_QUOTA: 503,
+  /** The global handler budget in `REQUEST_TIMEOUT_MS` was exceeded (docs/16 §3.11). */
+  TIMEOUT: 504,
 } as const satisfies Record<string, number>;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
@@ -95,3 +161,22 @@ export function isPermanentDenial(code: string): boolean {
 export function isRefreshable(code: string): boolean {
   return code === 'AUTH_EXPIRED' || code === 'AUTH_INVALID_TOKEN';
 }
+
+/**
+ * The codes that carry a `Retry-After` header. docs/16 §5: every 429 and every
+ * retryable 503 must.
+ *
+ * Used by `lib/server/route.ts` to assert the header is present, because a 429
+ * without `Retry-After` tells a well-behaved client to guess a backoff and a
+ * hostile one to guess zero.
+ */
+export const RETRY_AFTER_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
+  'RATE_LIMITED',
+  'RATE_LIMIT_EXCEEDED',
+  'DB_UNAVAILABLE',
+  'AI_UNAVAILABLE',
+  'AI_QUOTA',
+  'MAPS_UNAVAILABLE',
+  'TIMEOUT',
+]);
+

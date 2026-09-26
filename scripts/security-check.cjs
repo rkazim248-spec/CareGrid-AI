@@ -1,18 +1,19 @@
 /**
  * ============================================================================
- * CareGrid AI — Phase 2 security checklist, mechanically verified
+ * CareGrid AI — security checklist, mechanically verified
  * ============================================================================
  *
- * The Phase 2 brief (§39) lists fifteen items. Fourteen of them are properties of
- * files in this repository and can be checked by reading the files; this script
- * checks them so the answer cannot drift from the code between reviews.
+ * Every item below is a property of files in this repository and is checked by
+ * reading them, so the answer cannot drift from the code between reviews. Three
+ * of them need a running server and are verified by the unit suite and by a
+ * manual pass instead; they say so.
  *
- * The fifteenth — "logout invalidates application auth state" — is a runtime
- * behaviour and is verified in `tests/unit/privilege-escalation.test.ts` plus a
- * manual browser pass, not here.
+ * PHASE 3 added: the `NEXT_PUBLIC_`-publishes-a-secret check, the credential-file
+ * ignore rules, the "one reader per secret" rule, the "no fake API key" rule, and
+ * the `server-only` guard on all six new server modules.
  *
  * USAGE:  node scripts/security-check.cjs
- * EXIT:   0 when every check passes, 1 otherwise. Wire it into CI.
+ * EXIT:   0 when every check passes, 1 otherwise. Wired into `npm run verify`.
  */
 
 'use strict';
@@ -40,7 +41,7 @@ function walk(dir, out = []) {
   return out;
 }
 
-const sourceRoots = ['app', 'components', 'features', 'config', 'lib', 'types', 'validators', 'tests', 'scripts'];
+const sourceRoots = ['app', 'components', 'features', 'config', 'lib', 'types', 'validators', 'tests', 'scripts', 'services'];
 const files = sourceRoots.flatMap((root) => walk(join(ROOT, root)));
 const read = (path) => readFileSync(join(ROOT, path), 'utf8');
 /**
@@ -52,6 +53,103 @@ const read = (path) => readFileSync(join(ROOT, path), 'utf8');
  * exactly like "no violations found" while checking nothing.
  */
 const rel = (path) => path.replace(ROOT + '\\', '').replace(ROOT + '/', '').split('\\').join('/');
+
+/**
+ * Strip comments, respecting string literals.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY NOT A REGEX
+ * ---------------------------------------------------------------------------
+ * Because a regex gets this wrong in a way that produces a SILENT false pass, and
+ * this file hit it while being written.
+ *
+ * `middleware.ts` contains the CSP directive that lists the Firestore realtime
+ * transport as `wss:` followed by two slashes and an asterisk. In that string,
+ * the two-character sequence "slash asterisk" appears. A block-comment strip
+ * written as a pattern therefore treats it as the start of a comment and
+ * swallows every directive from there to the next closing marker — several
+ * hundred characters of real configuration — so every check below it reports
+ * "not found" and the whole security check passes while reading nothing.
+ *
+ * A checker that silently stops seeing code is worse than no checker. So this is
+ * a small explicit scanner with four states rather than a pattern.
+ *
+ * Its one known limitation: a REGEX LITERAL containing a quote character would be
+ * mis-parsed as a string. No file checked here contains one, and the limitation is
+ * stated rather than defended against with more scanner code.
+ *
+ * (Note that this very comment had to be reworded: its first draft quoted the
+ * pattern it was warning about, and the quoted pattern closed the comment.)
+ */
+
+function code(path) {
+  const text = readFileSync(join(ROOT, path), 'utf8');
+  const SINGLE = 39;
+  const DOUBLE = 34;
+  const BACKTICK = 96;
+  const BACKSLASH = 92;
+  const SLASH = 47;
+  const STAR = 42;
+  const NEWLINE = 10;
+
+  let out = '';
+  let i = 0;
+  // 'code' | 'line' | 'block' | a quote character
+  let mode = 'code';
+
+  while (i < text.length) {
+    const ch = text.charCodeAt(i);
+    const next = text.charCodeAt(i + 1);
+
+    if (mode === 'code') {
+      if (ch === SLASH && next === SLASH) { mode = 'line'; i += 2; continue; }
+      if (ch === SLASH && next === STAR) { mode = 'block'; i += 2; continue; }
+      if (ch === SINGLE || ch === DOUBLE || ch === BACKTICK) {
+        mode = String.fromCharCode(ch);
+        out += text[i];
+        i += 1;
+        continue;
+      }
+      out += text[i];
+      i += 1;
+      continue;
+    }
+
+    if (mode === 'line') {
+      if (ch === NEWLINE) { mode = 'code'; out += text[i]; }
+      i += 1;
+      continue;
+    }
+
+    if (mode === 'block') {
+      if (ch === STAR && next === SLASH) { mode = 'code'; i += 2; continue; }
+      i += 1;
+      continue;
+    }
+
+    // Inside a string literal. A backslash escapes the next character.
+    //
+    // The CONTENT IS KEPT, not discarded, and that is deliberate: several checks
+    // below look for a name that only ever appears inside a string literal —
+    // a variable name, a CSP directive, an error code. A stripper that deleted
+    // string contents would report "not found" for a file that plainly has it.
+    // What is removed here is COMMENTS, which is the entire point: these files
+    // explain at length why they do not do the thing being checked.
+    if (ch === BACKSLASH) {
+      out += text[i] + (text[i + 1] ?? '');
+      i += 2;
+      continue;
+    }
+    out += text[i];
+    if (String.fromCharCode(ch) === mode) mode = 'code';
+    i += 1;
+  }
+
+  return out;
+}
+
+
+
 
 /* ------------------------------------------------------------------------ */
 /* 1. No credentials in source                                                */
@@ -66,6 +164,10 @@ const SECRET_PATTERNS = [
 
 const secretHits = [];
 for (const file of files) {
+  // `tests/` is excluded, and the exclusion is by name rather than by guesswork.
+  // A test that asserts "a private key block is refused" has to WRITE one, and a
+  // scanner that cannot tell a fixture from a leak is a scanner nobody trusts.
+  if (rel(file).startsWith('tests/')) continue;
   const text = readFileSync(file, 'utf8');
   for (const { name, re } of SECRET_PATTERNS) {
     if (re.test(text)) secretHits.push(`${rel(file)}: ${name}`);
@@ -104,7 +206,7 @@ for (const line of envExample.split('\n')) {
 check('Every secret in .env.example is empty', populated.length === 0, populated.join('; '));
 
 /* ------------------------------------------------------------------------ */
-/* 3. .env.local is git-ignored and absent                                    */
+/* 3. .env.local is git-ignored and absent, and no credential file can be    */
 /* ------------------------------------------------------------------------ */
 
 const gitignore = existsSync(join(ROOT, '.gitignore')) ? read('.gitignore') : '';
@@ -112,6 +214,186 @@ const ignored = /^\.env\*?\.local/m.test(gitignore) || /^\.env$/m.test(gitignore
 const localAbsent = !existsSync(join(ROOT, '.env.local'));
 check('.env.local is git-ignored', ignored);
 check('.env.local is not committed', localAbsent, localAbsent ? '' : '.env.local exists in the tree');
+
+/**
+ * Credential files are ignored BY EXTENSION, not by name.
+ *
+ * A `service-account.json` rule alone is not enough: a PEM exported as
+ * `firebase-key.pem`, or a keystore as `upload.jks`, is the same credential
+ * under a different extension. `.gitignore` therefore lists the extensions AND
+ * the well-known filenames, and this check fails if any of them is removed —
+ * a `.gitignore` that quietly stops excluding a key looks exactly like one that
+ * never did.
+ */
+const CREDENTIAL_IGNORE_RULES = [
+  '*.pem',
+  '*.key',
+  '*.p12',
+  '*.pfx',
+  '*.jks',
+  '*.keystore',
+  '*service-account*.json',
+  '*serviceAccount*.json',
+  'firebase-adminsdk-*.json',
+  '.vercel/',
+];
+const missingCredentialRules = CREDENTIAL_IGNORE_RULES.filter(
+  (rule) => !gitignore.split('\n').some((line) => line.trim() === rule),
+);
+check(
+  'Private credential files are git-ignored',
+  missingCredentialRules.length === 0,
+  missingCredentialRules.join('; '),
+);
+
+/**
+ * NO FAKE API KEY ANYWHERE.
+ *
+ * A placeholder key is worse than a missing one: a real provider rejects it with
+ * an error that looks exactly like a network fault, and a reviewer loses an
+ * afternoon to it. The Firebase web config is a real key shape and IS expected
+ * to appear in `.env.example` — empty. This checks the source tree only, where
+ * any key-shaped literal is a bug.
+ */
+const FAKE_KEY = {
+  name: 'placeholder or hard-coded API key',
+  re: /AIza[0-9A-Za-z_-]{10,}/,
+};
+const fakeKeyHits = [];
+for (const file of files) {
+  if (rel(file).startsWith('tests/')) continue;
+  if (FAKE_KEY.re.test(code(rel(file)))) fakeKeyHits.push(rel(file));
+}
+check('No key-shaped literal in the source tree', fakeKeyHits.length === 0, fakeKeyHits.join('; '));
+
+/**
+ * NO `NEXT_PUBLIC_` VARIABLE PUBLISHES A SERVER SECRET.
+ *
+ * Anything prefixed `NEXT_PUBLIC_` is INLINED into the client bundle by Next at
+ * build time — not obfuscated, not encrypted, in the JavaScript every visitor
+ * downloads. docs/21 §7 requires the build to fail if a `NEXT_PUBLIC_` value
+ * matches a server-secret pattern, and this is that check.
+ */
+const SERVER_SECRET_NAMES = [
+  'GEMINI_API_KEY',
+  'GOOGLE_MAPS_SERVER_KEY',
+  'FIREBASE_PRIVATE_KEY',
+  'FIREBASE_CLIENT_EMAIL',
+  'TWILIO_AUTH_TOKEN',
+  'TWILIO_ACCOUNT_SID',
+  'CRON_SECRET',
+  'IP_HASH_SALT',
+  'SEED_DEMO_PASSWORD',
+];
+const publishOffenders = [];
+for (const file of files) {
+  if (rel(file).startsWith('tests/')) continue;
+  for (const line of code(rel(file)).split('\n')) {
+    const match = line.match(/process\.env\.([A-Z0-9_]+)/g) ?? [];
+    for (const reference of match) {
+      const name = reference.replace('process.env.', '');
+      if (!name.startsWith('NEXT_PUBLIC_')) continue;
+      if (SERVER_SECRET_NAMES.some((secret) => name.includes(secret))) {
+        publishOffenders.push(`${rel(file)}: ${name}`);
+      }
+    }
+  }
+}
+check(
+  'No NEXT_PUBLIC_ variable publishes a server secret',
+  publishOffenders.length === 0,
+  publishOffenders.join('; '),
+);
+
+/**
+ * EACH PROVIDER SECRET IS READ IN EXACTLY ONE FILE.
+ *
+ * `rg GEMINI_API_KEY` must be a complete audit of where a key can be read. Two
+ * readers means two places to forget a timeout, two places to log it by
+ * accident, and no way to rotate it with confidence. The one legitimate reader
+ * is the env accessor, which owns the validation and the defaults.
+ *
+ * `tests/` is excluded because a test that asserts "this secret is read in one
+ * place" has to NAME the secret to assert it.
+ */
+const ONE_READER_SECRETS = ['GEMINI_API_KEY', 'GOOGLE_MAPS_SERVER_KEY', 'TWILIO_AUTH_TOKEN'];
+const multiReaderOffenders = [];
+for (const secret of ONE_READER_SECRETS) {
+  const readers = files
+    .map(rel)
+    .filter((file) => !file.startsWith('tests/'))
+    .filter((file) => code(file).includes(secret));
+  if (readers.length !== 1 || readers[0] !== 'lib/env.server.ts') {
+    multiReaderOffenders.push(`${secret}: ${readers.join(', ') || 'nowhere'}`);
+  }
+}
+check(
+  'Each provider secret is read only by lib/env.server.ts',
+  multiReaderOffenders.length === 0,
+  multiReaderOffenders.join('; '),
+);
+
+/**
+ * NO SERVICE, INTEGRATION, VALIDATOR, OR ROUTE READS `process.env`.
+ *
+ * The rule is "secrets come from `lib/env.server.ts`, once". A direct read
+ * anywhere else bypasses the validation, the clamping, and the boot check. The
+ * five files outside `lib/env.*` that legitimately read the environment each
+ * read `NODE_ENV` or a documented boolean, and are listed so adding a sixth is a
+ * deliberate act rather than an accident.
+ */
+const ENV_ALLOWED = new Set([
+  'lib/env.server.ts',
+  'lib/env.client.ts',
+  'lib/env.maintenance.ts',
+  // Reads `NODE_ENV` to relax HSTS and the CSP in development, and to set
+  // `X-Robots-Tag`. Neither is a secret and neither is available on the client.
+  'middleware.ts',
+  // Reads `LOG_LEVEL` directly so a logger can never be prevented from logging by
+  // a missing secret — a real Phase 2 bug, recorded in
+  // `tests/unit/unconfigured-deployment.test.ts`.
+  'lib/server/http.ts',
+  'lib/api/client.ts',
+  'lib/firebase/auth.ts',
+  // Reads `NODE_ENV` for a development-only warning. Not a secret, and a client
+  // component legitimately needs to know whether it is a development build.
+  'components/providers/session-provider.tsx',
+]);
+const envOffenders = files
+  .map(rel)
+  .filter((file) => !ENV_ALLOWED.has(file))
+  .filter((file) => !file.startsWith('tests/'))
+  .filter((file) => code(file).includes('process.env'));
+check(
+  'process.env is read only by the env accessors',
+  envOffenders.length === 0,
+  envOffenders.join('; '),
+);
+
+
+/**
+ * NO INTEGRATION HAS A DEV-ONLY SUCCESS BRANCH.
+ *
+ * docs/32 MUST 7: no `if (DEV) return FAKE_DATA` in a production path. A branch
+ * that could make a Gemini call, a geocode, or an SMS send "succeed" without a
+ * provider would be fabricated behaviour in an emergency system, and it would be
+ * invisible in a demo.
+ */
+const INTEGRATIONS = [
+  'services/integrations/gemini/index.ts',
+  'services/integrations/google-maps/index.ts',
+  'services/integrations/twilio/index.ts',
+];
+const fakeBranchOffenders = INTEGRATIONS.filter((file) => {
+  if (!existsSync(join(ROOT, file))) return true;
+  const text = code(file);
+  return /NODE_ENV|import\.meta\.env|\bDEV\b/.test(text);
+});
+check(
+  'No integration has a dev-only data branch',
+  fakeBranchOffenders.length === 0,
+  fakeBranchOffenders.join('; '),
+);
 
 /* ------------------------------------------------------------------------ */
 /* 4. No role, permission, or token comes from browser storage                 */
@@ -207,12 +489,55 @@ const SERVER_MODULES = [
   'lib/server/errors.ts',
   'lib/server/http.ts',
   'lib/env.server.ts',
+  // Phase 3. Each of these can reach a secret or a server-only SDK, so the
+  // poison pill is what stops a client bundle from ever including it. The
+  // `server-only` import is a BUILD error, which is a far stronger guarantee
+  // than a review convention.
+  //
+  // `lib/env.client.ts` is deliberately NOT in this list: it is the browser-safe
+  // accessor and adding the guard to it would break the landing page.
+  'lib/server/logging.ts',
+  'lib/server/validate.ts',
+  'lib/server/rate-limit.ts',
+  'lib/server/serialize.ts',
+  'lib/server/permissions.ts',
+  'services/auth/account.ts',
+  'services/admin/system-health.ts',
+  'services/ai/triage.ts',
+  'services/integrations/gemini/index.ts',
+  'services/integrations/google-maps/index.ts',
+  'services/integrations/twilio/index.ts',
 ];
 const missingGuard = SERVER_MODULES.filter((path) => {
   if (!existsSync(join(ROOT, path))) return true;
   return !/^\s*import 'server-only';/m.test(read(path));
 });
 check('Every secret-reading module has `server-only`', missingGuard.length === 0, missingGuard.join('; '));
+
+/**
+ * `lib/integrations/contracts.ts` is deliberately EXCLUDED from the list above,
+ * and the exclusion is asserted rather than assumed.
+ *
+ * It is the one file a Client Component and a unit test are both allowed to
+ * import, which is the entire reason it is a pure interface file. Adding the
+ * guard would break both, and nothing would fail to tell you why. Its protection
+ * is PURENESS: there is nothing in it to leak, which this check confirms.
+ */
+const contractsPath = 'lib/integrations/contracts.ts';
+const contractsIsPure =
+  existsSync(join(ROOT, contractsPath)) &&
+  !/^\s*import 'server-only';/m.test(read(contractsPath)) &&
+  !code(contractsPath).includes('process.env') &&
+  !code(contractsPath).includes('fetch(') &&
+  // An IMPORT of the SDK, not the string. `'firebase-admin'` is a legitimate
+  // value in the `ProviderStatus.provider` union, so a substring test here
+  // would report a false positive and train an operator to ignore the check.
+  !/from\s+['"]firebase-admin/.test(code(contractsPath));
+check(
+  'lib/integrations/contracts.ts stays pure (no guard, no env, no SDK)',
+  contractsIsPure,
+  'the contract file must be importable from a client bundle and a unit test',
+);
 
 /* ------------------------------------------------------------------------ */
 /* 9. The client never imports a server module                               */
@@ -223,12 +548,24 @@ const clientOffenders = [];
 for (const file of files) {
   const path = rel(file);
   // Route handlers ARE server, and a server module importing another server
-  // module is the whole point of the lib/server boundary.
-  if (path.startsWith('app/api') || path.startsWith('lib/server')) continue;
-  const text = readFileSync(file, 'utf8');
-  if (SERVER_PATTERN.test(text)) clientOffenders.push(rel(file));
+  // module is the whole point of the lib/server boundary. `services/**` is
+  // server-only for the same reason, and is banned from the client tree.
+  // `tests/**` is excluded because a test asserts these boundaries and
+  // therefore has to import across them.
+  if (
+    path.startsWith('app/api') ||
+    path.startsWith('lib/server') ||
+    path.startsWith('services') ||
+    path.startsWith('tests/')
+  ) {
+    continue;
+  }
+  const text = code(path);
+  if (SERVER_PATTERN.test(text)) clientOffenders.push(path);
+  if (/from '@\/services/.test(text)) clientOffenders.push(`${path} (imports @/services)`);
 }
 check('No client-reachable file imports a server module', clientOffenders.length === 0, clientOffenders.join('; '));
+
 
 /* ------------------------------------------------------------------------ */
 /* 10. Firebase credentials are environment variables, never literals        */
@@ -236,7 +573,7 @@ check('No client-reachable file imports a server module', clientOffenders.length
 
 const firebaseConfigHits = [];
 for (const file of files) {
-  const text = readFileSync(file, 'utf8');
+  const text = code(rel(file));
   // An `initializeApp({ ... })` with a literal apiKey would be a hard-coded
   // credential. The config must come from `getPublicConfig()`.
   if (/initializeApp\(\s*\{/.test(text) && /apiKey\s*:/.test(text)) {
@@ -246,13 +583,126 @@ for (const file of files) {
 check('No hard-coded Firebase config', firebaseConfigHits.length === 0, firebaseConfigHits.join('; '));
 
 /* ------------------------------------------------------------------------ */
+/* 11. No CORS, and no permissive cross-origin policy                        */
+/* ------------------------------------------------------------------------ */
+
+// `tests/` is excluded because a test that asserts "no CORS header is set" has to
+// NAME the header to assert it.
+const corsOffenders = files
+  .map(rel)
+  .filter((file) => !file.startsWith('tests/'))
+  .filter((file) => /Access-Control-Allow-(Origin|Credentials)/.test(code(file)));
+check(
+  'No Access-Control-Allow-Origin anywhere (docs/10 §12.2)',
+  corsOffenders.length === 0,
+  corsOffenders.join('; '),
+);
+
+
+/* ------------------------------------------------------------------------ */
+/* 12. The security headers are present and not permissive                   */
+/* ------------------------------------------------------------------------ */
+
+const middleware = existsSync(join(ROOT, 'middleware.ts')) ? code('middleware.ts') : '';
+const HEADERS = [
+  ['Content-Security-Policy', /'Content-Security-Policy'/],
+  ['X-Content-Type-Options', /'X-Content-Type-Options':\s*'nosniff'/],
+  ['X-Frame-Options', /'X-Frame-Options':\s*'DENY'/],
+  ['Referrer-Policy', /'Referrer-Policy'/],
+  ['Permissions-Policy', /'Permissions-Policy'/],
+  // Required for signInWithPopup; the browser default of `same-origin` severs
+  // the window handle and Google sign-in silently fails.
+  ['Cross-Origin-Opener-Policy', /'Cross-Origin-Opener-Policy':\s*'same-origin-allow-popups'/],
+  ['Cross-Origin-Resource-Policy', /'Cross-Origin-Resource-Policy':\s*'same-origin'/],
+  ['Strict-Transport-Security', /'Strict-Transport-Security'/],
+];
+const missingHeaders = HEADERS.filter(([, pattern]) => !pattern.test(middleware)).map(([name]) => name);
+check('Every documented security header is set', missingHeaders.length === 0, missingHeaders.join('; '));
+
+/**
+ * The production `script-src` must carry a nonce and no `'unsafe-inline'`.
+ *
+ * The dev-only `'unsafe-eval'` is stripped first: React Fast Refresh genuinely
+ * requires it, and a dev allowance cannot affect a production deployment.
+ */
+const scriptSrcLine = middleware.split('\n').find((line) => /^\s*`?script-src /.test(line)) ?? '';
+const productionScriptSrc = scriptSrcLine.replace("'unsafe-eval'", '');
+check(
+  "script-src has a nonce and no 'unsafe-inline'",
+  productionScriptSrc.includes("'nonce-") && !productionScriptSrc.includes('unsafe-inline'),
+  scriptSrcLine.trim(),
+);
+check('script-src-attr is none', /"script-src-attr 'none'"/.test(middleware));
+check("object-src is 'none'", /"object-src 'none'"/.test(middleware));
+check("frame-ancestors is 'none'", /"frame-ancestors 'none'"/.test(middleware));
+check("base-uri is 'self'", /"base-uri 'self'"/.test(middleware));
+check("form-action is 'self'", /"form-action 'self'"/.test(middleware));
+
+/**
+ * `img-src` must not be `https:`.
+ *
+ * A wildcard in `img-src` permits loading an image from ANY host, which is the
+ * same class of mistake as `'unsafe-inline'`. The real list is short and
+ * knowable, so there is no reason to be vague.
+ */
+const imgSrcLine = middleware.split('\n').find((line) => /^\s*"img-src /.test(line)) ?? '';
+check('img-src is an explicit host list, not https:', !/img-src[^"]*\shttps:[;"]/.test(imgSrcLine), imgSrcLine.trim());
+
+/* ------------------------------------------------------------------------ */
+/* 13. The rate-limit store is never PINNED to `memory`                       */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * A PIN, in either of the two forms that could actually do it.
+ *
+ * 1. A code assignment: `process.env.RATE_LIMIT_STORE = 'memory'`. Nothing in
+ *    this repository does that, and a deployment sets the variable on the
+ *    platform rather than in code.
+ * 2. A committed env FILE with `RATE_LIMIT_STORE=memory`.
+ *
+ * The naive version of this check is a substring search for the text
+ * `RATE_LIMIT_STORE=memory`, which matches the sentence inside
+ * `serverEnvProblems()` that REPORTS the value as unsafe. Flagging the detector
+ * is how a check gets switched off, so the pattern is narrowed to an assignment
+ * and a file line, and the detector is left alone.
+ */
+const pinPatterns = [
+  /process\.env\.RATE_LIMIT_STORE\s*=\s*['"]memory['"]/,
+  /^\s*RATE_LIMIT_STORE\s*=\s*memory\s*$/m,
+];
+const rateLimitStoreHits = [];
+for (const file of files) {
+  if (rel(file).startsWith('tests/')) continue;
+  if (pinPatterns.some((re) => re.test(code(rel(file))))) rateLimitStoreHits.push(rel(file));
+}
+if (/^\s*RATE_LIMIT_STORE\s*=\s*memory\s*$/m.test(envExample)) {
+  rateLimitStoreHits.push('.env.example');
+}
+check('No source pins RATE_LIMIT_STORE to memory', rateLimitStoreHits.length === 0, rateLimitStoreHits.join('; '));
+
+
+
+/* ------------------------------------------------------------------------ */
+/* 14. `ALLOW_SEED` is never enabled in committed configuration               */
+/* ------------------------------------------------------------------------ */
+
+const seedHits = [];
+for (const line of envExample.split('\n')) {
+  const bare = line.split('#')[0].trim();
+  if (bare.startsWith('ALLOW_SEED=') && bare.slice('ALLOW_SEED='.length).trim() === 'true') {
+    seedHits.push('ALLOW_SEED=true in .env.example');
+  }
+}
+check('ALLOW_SEED is false in .env.example', seedHits.length === 0, seedHits.join('; '));
+
+/* ------------------------------------------------------------------------ */
 /* Report                                                                     */
 /* ------------------------------------------------------------------------ */
 
 const pad = Math.max(...results.map((r) => r.label.length));
 let failed = 0;
 
-console.log('CareGrid AI — Phase 2 security checklist\n');
+console.log('CareGrid AI — security checklist\n');
 for (const result of results) {
   const mark = result.passed ? 'PASS' : 'FAIL';
   if (!result.passed) failed += 1;

@@ -8,6 +8,32 @@
 /** A requestId as produced by `lib/server/request-id.ts` (docs/08 FR-141). */
 export const REQUEST_ID_PATTERN = /^req_[A-Za-z0-9]{12}$/;
 
+/**
+ * The API release identifier, echoed by `GET /api/health` and
+ * `GET /api/admin/system/health`, and shown in the client footer.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY IT LIVES HERE AND NOT IN A SERVICE
+ * ---------------------------------------------------------------------------
+ * Because `GET /api/health` must be importable WITHOUT pulling in a service. The
+ * `services/` barrel reaches `services/auth/account.ts`, which imports the Admin
+ * SDK, and a liveness route should not carry the Admin SDK in its bundle at all
+ * — not even lazily, because a cold start pays for module resolution.
+ *
+ * This file is the project's declared home for "shared constants with no better
+ * home" (docs/31: no `utils.ts` god file), and a version string is exactly that.
+ * It is a string, so it is safe on both sides of the wire.
+ */
+export const API_VERSION = '0.3.0-phase3';
+
+/**
+ * The service identifier every health response carries.
+ *
+ * A constant rather than a build-time value so a support screenshot is
+ * unambiguous about which system answered.
+ */
+export const API_SERVICE_NAME = 'CareGrid AI API';
+
 /** A citizen-facing reference: `CG-` + 6 Crockford base32 chars (no I/L/O/U). */
 export const REFERENCE_PATTERN = /^CG-[0-9A-HJKMNP-TV-Z]{6}$/;
 

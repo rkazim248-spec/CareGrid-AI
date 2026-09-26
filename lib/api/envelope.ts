@@ -33,6 +33,18 @@ export const apiErrorDetailSchema = z.object({
   issue: z.string(),
 });
 
+/**
+ * One field-level issue.
+ *
+ * Declared ONCE, here, derived from the schema above. It was previously declared
+ * a second time in `lib/server/validate.ts` — and a hand-written duplicate of a
+ * contract in two places is two definitions of it, and a change to one is a bug
+ * in the other. `issue` is a machine token from a closed vocabulary, never a
+ * rendered sentence, so the client can localise it without a server change
+ * (docs/17 §12).
+ */
+export type ApiErrorDetail = z.infer<typeof apiErrorDetailSchema>;
+
 export const apiErrorBodySchema = z.object({
   /** A stable catalogue code. Never free text. */
   code: z.string(),

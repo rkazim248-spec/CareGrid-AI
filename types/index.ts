@@ -33,3 +33,12 @@ export {
 } from '@/types/enums';
 
 export type * from '@/types/domain';
+
+/**
+ * The wire contract, re-exported so a component imports `@/types` and gets
+ * everything. Added in Phase 3; the definitions live in `lib/api/envelope.ts`
+ * and `lib/api/error-codes.ts` beside their Zod schemas, because a schema and
+ * its inferred type declared apart are two definitions of one contract.
+ */
+export type * from '@/types/api';
+

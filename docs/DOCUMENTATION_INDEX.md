@@ -5,10 +5,10 @@
 | | |
 | --- | --- |
 | Package | CareGrid AI — emergency and community-aid routing platform |
-| Version | v1.0.2 (post-Phase-2-authentication) |
+| Version | v1.0.3 (post-Phase-3-backend-foundation) |
 | Documents | 37 (33 numbered + this index + the consistency report + 2 Phase 2 records) |
 | Size | 39 243 lines · 49 Mermaid diagrams · 491 code blocks · ~14 000 table rows |
-| Status | Documentation complete. **Phases 1 and 2 of the implementation are built** — 22 routes, real authentication, a 61-row permission matrix, deny-by-default Firestore rules. Phases 3+ not started |
+| Status | Documentation complete. **Phases 1, 2, and 3 of the implementation are built** — 22 routes, real authentication, a 61-row permission matrix, deny-by-default Firestore rules, and a full backend foundation (request pipeline, service layer, centralized validation/authorization/rate limiting, and Gemini/Maps/Twilio connection points). Phases 4+ not started |
 | Audience | A 3-person hackathon team, including AI coding agents |
 | Read time | Full package ≈ 7–9 hours. Minimum viable read ≈ 90 minutes (see §3) |
 
@@ -147,6 +147,8 @@ checklist. When you finish, explain the files you changed.
 | 31 | [Coding Standards](./31_CODING_STANDARDS.md) | TypeScript rules, naming, component/API/service/Firestore/realtime conventions, Git conventions, security rules in code, the dependency policy, 27 anti-pattern examples, Definition of Done | Writing or reviewing code |
 | 32 | [AI Coding Agent Rules](./32_AI_CODING_AGENT_RULES.md) | 15 MUST + 9 MUST NOT from the brief, each expanded with a ❌/✅ violation example; 15 agent-specific rules; pre-flight and post-flight checklists; "if you need X, do Y"; 13 failure modes; a worked example; honesty rules | **Always, if you are writing code here** |
 | 33 | [README](./33_README.md) | The project in one page: vision, capabilities, stack, documentation map, contribution rules, honest limitations | Orientation |
+| **30.4** | [**Phase 3 Foundation**](./30.4_PHASE_3_FOUNDATION.md) | **What Phase 3 actually built**, file by file; the request pipeline in order; **the three real bugs it found** (a missing error code, a wrong HTTP status, and two product features blocked by a browser policy); the **six reconciliations** where the code and the documentation had to disagree; an acceptance-criteria table; and a paste-ready checklist for Phase 4 | Reviewing the backend foundation; starting Phase 4 |
+| **34** | [**Backend Integration Points**](./34_BACKEND_INTEGRATION_POINTS.md) | **Where every future integration connects**, by exact file. Gemini, Google Maps, Twilio, incidents, realtime. What each later phase edits, what it must not do, and the CSP items still to be added. Plus **seven honest limitations** of the foundation | Before starting any integration phase; answering "where does X go?" |
 | **30.2** | [**Phase 2 Implementation**](./30.2_PHASE_2_IMPLEMENTATION.md) | **What Phase 2 actually built**, file-by-file; the **six documented divergences** from the plan and the reason for each; an acceptance-criteria status table; an 11-step manual verification checklist; the Phase 2 → Phase 3 seam | Reviewing the auth layer; starting Phase 3 |
 | **30.3** | [**Phase 2 Doc Amendments**](./30.3_PHASE_2_DOC_AMENDMENTS.md) | The **ten amendments** the Phase 2 build found necessary, each with the text as it stands and the text as it should read, plus a paste-ready checklist for the next documentation pass | Amending the normative documents |
 

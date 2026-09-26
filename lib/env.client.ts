@@ -191,3 +191,81 @@ export function firebaseConfigurationProblem(): string | null {
     'a network fault.'
   );
 }
+
+/* ========================================================================== */
+/* Google Maps — the CLIENT half (docs/12 §7, docs/21 §5)                      */
+/* ========================================================================== */
+
+/**
+ * The browser-visible Google Maps configuration.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS `NEXT_PUBLIC_` AND `GOOGLE_MAPS_SERVER_KEY` IS NOT
+ * ---------------------------------------------------------------------------
+ * The Maps JavaScript API is loaded by a `<script>` tag in the page. A browser
+ * cannot hold a secret, so the key that loads it is public by construction and
+ * is protected by TWO Google Cloud restrictions instead:
+ *
+ *   1. **Application → HTTP referrers**: `localhost:3000/*`,
+ *      `https://<staging-domain>/*`, `https://<prod-domain>/*` (docs/21 §5).
+ *   2. **API restriction**: Maps JavaScript API and Places API only.
+ *
+ * Anything that runs on OUR server — geocoding, the distance matrix, the risk
+ * analytics pass — uses `GOOGLE_MAPS_SERVER_KEY` from `lib/env.server.ts`,
+ * restricted by IP to the Vercel egress ranges. The two keys are different
+ * values with different restrictions, and neither is ever sent to the other side.
+ *
+ * `undefined` here is a NORMAL state in Phase 3: the map ships in Phase 6, and
+ * a missing browser key must not break sign-in or the report form.
+ */
+export type PublicMapsConfig = {
+  readonly browserKey: string | null;
+  readonly style: 'roadmap' | 'satellite' | 'hybrid' | 'dark';
+  readonly zoomDefault: number;
+  readonly zoomMax: number;
+  readonly mapsProblem: string | null;
+};
+
+let cachedMaps: PublicMapsConfig | null = null;
+
+export function getPublicMapsConfig(): PublicMapsConfig {
+  if (cachedMaps) return cachedMaps;
+
+  const key = optional('NEXT_PUBLIC_GOOGLE_MAPS_API_KEY', '');
+  const rawStyle = optional('NEXT_PUBLIC_MAP_STYLE', 'dark');
+  const style =
+    rawStyle === 'roadmap' || rawStyle === 'satellite' || rawStyle === 'hybrid' || rawStyle === 'dark'
+      ? rawStyle
+      : 'dark';
+
+  const zoomDefault = clampNumber('NEXT_PUBLIC_MAP_ZOOM_DEFAULT', 13, 1, 21);
+  const zoomMax = clampNumber('NEXT_PUBLIC_MAP_ZOOM_MAX', 18, zoomDefault, 21);
+
+  cachedMaps = {
+    browserKey: key === '' ? null : key,
+    style,
+    zoomDefault,
+    zoomMax,
+    mapsProblem:
+      key === ''
+        ? 'The map is not configured: NEXT_PUBLIC_GOOGLE_MAPS_API_KEY is not set. Incident locations ' +
+          'are still shown in the list, which is the documented fallback (docs/12 §9).'
+        : null,
+  };
+
+  return cachedMaps;
+}
+
+/** `true` when the browser map may load. The LIST fallback renders when false. */
+export function isMapsConfigured(): boolean {
+  return getPublicMapsConfig().browserKey !== null;
+}
+
+function clampNumber(name: string, fallback: number, min: number, max: number): number {
+  const raw = optional(name, '');
+  if (raw === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+}
+

@@ -865,3 +865,144 @@ Each entry is a specific, named failure mode with the reason and the correct alt
 | S6 | `types/ui.ts` — the closest thing to a "types grab bag" in this layout | Acceptable only because it holds value types (badge/chip specs) shared by 3+ features. If it exceeds ~80 lines, split it | — |
 | S7 | Whether `tests/fixtures/` (test data) may live under `tests/` while `services/seed/seed-data.ts` holds the demo seed | Keep them separate: `services/seed/` is referenced by the demo script, `tests/fixtures/` is not part of the app build | — |
 | S8 | Whether the ESLint boundary config uses `eslint-plugin-boundaries` (declarative elements) or hand-rolled `no-restricted-imports` patterns | Use `no-restricted-imports` (already shown in §3.3) to avoid one more dependency. `eslint-plugin-boundaries` is worth it only if the element matrix grows beyond ~12 entries | Tooling |
+
+---
+
+## 9. Phase 3 delta (v1.0.3)
+
+**What actually exists now**, added by the backend-foundation phase. Recorded here because
+[20 §2](./20_PROJECT_FOLDER_STRUCTURE.md) is normative for file placement, and a path that is not
+listed may not be imported (this document §8).
+
+The full rationale for each choice is in
+[30.4 Phase 3 Foundation §6](./30.4_PHASE_3_FOUNDATION.md); the reconciliation against §3.2 is
+summarised at the end of this section.
+
+### 9.1 New and changed paths
+
+```text
+lib/
+├── api/
+│   ├── client.ts              (extended) typed client + token seam + endpoints
+│   ├── envelope.ts            (unchanged) success/error envelope, Zod-validated
+│   ├── error-codes.ts         (extended) the catalogue; see 30.4 §5 for the three fixes
+│   └── errors.ts              (NEW) ApiError + isApiError + messageFor. Split from client.ts
+│                              so a component can import the ERROR without the fetch
+│                              machinery, its token seam, and its response schemas
+├── env.client.ts              (extended) getPublicMapsConfig() — the browser half of the
+│                              Maps split
+├── env.server.ts              (extended) three TIERS. getServerEnv() still throws for the
+│                              three Admin variables. A new optional tier reads Gemini,
+│                              Maps, Twilio, CRON, IP_HASH_SALT — and NEVER throws, because
+│                              a missing Gemini key must not stop a citizen signing in
+├── integrations/
+│   └── contracts.ts           (NEW) PURE. TriageProvider, GeocodingProvider,
+│                              NotificationChannel, ProviderStatus. No server-only guard,
+│                              and that is the point: a Client Component and a unit test
+│                              are both allowed to import it
+├── server/
+│   ├── route.ts               (rewritten) the whole pipeline: precondition, request id,
+│   │                          CSRF, rate limit, auth, validation, handler, timeout,
+│   │                          envelope. Exactly ONE new Response() in the file
+│   ├── validate.ts            (NEW) parseJsonBody / parseSearchParams / parseParams /
+│   │                          formatZodIssues. 1 MB ceiling, UTF-8 bytes, 413/415/400
+│   ├── rate-limit.ts          (NEW) the Firestore token bucket, the rule table, the hashed
+│   │                          bucket id, the salted IP hash, constant-time secret compare
+│   ├── serialize.ts           (NEW) Firestore -> DTO, redaction profiles, field readers
+│   ├── permissions.ts         (NEW) requireCapability() / requireRole() / auditRefusal(),
+│   │                          evaluated against the 61-row matrix
+│   └── logging.ts             (NEW) a 3-export barrel over http.ts, so the module name
+│                              docs/10 §16.3 and docs/32 MUST NOT 9 reference is real
+│
+config/
+└── collections.ts             (NEW) the 15 collection names + config/app + the three
+                               subcollection names. docs/32 MUST NOT 5 names this file
+│
+services/                      (NEW ROOT FOLDER, §1 P4 "server-only and I/O-bound")
+├── index.ts                   the ONLY import path into services/, and only app/api/**
+│   │                          uses it. A barrel is a boundary, not a shortcut (§1 P10)
+├── auth/account.ts            bootstrapUser, getMe, updateMe, recordAuthEvent —
+│   │                          extracted from the four Phase 2 route handlers
+├── admin/system-health.ts     integration readiness + configuration faults
+├── ai/
+│   ├── index.ts               the domain barrel
+│   └── triage.ts              triageIncident() + toTriageRequest(). Cannot throw at its
+│                              caller (FR-029)
+└── integrations/
+    ├── gemini/index.ts        the ONLY reader of GEMINI_API_KEY. Non-functional
+    ├── google-maps/index.ts   the ONLY reader of GOOGLE_MAPS_SERVER_KEY. Non-functional
+    └── twilio/index.ts        the ONLY reader of the Twilio triple. Non-functional
+│
+types/
+└── api.ts                     (NEW) the shared wire contract, re-exported from
+                               lib/api/envelope.ts. A hand-written duplicate in two
+                               places is two definitions of one contract
+│
+validators/
+├── common.ts                  (NEW) docs/17 §2.1 primitives: trimmedString, boundedInt,
+│                              firestoreId, coordinateField, reasonField, strictObject
+├── query.ts                   (NEW) the pagination primitives, including the ONE clamp
+│                              in the system (docs/17 §4.1)
+├── ai.ts                      (NEW) the Phase 3 probe body + response
+└── index.ts                   (NEW) "the only import path route handlers use" (docs/17 §1.1)
+│
+app/api/
+├── health/route.ts            (extended) + service, uptimeSec, timestamp; short public
+│   │                          max-age. Still reads no database
+├── auth/
+│   ├── event/route.ts         (rewritten) a thin wrapper over the service
+│   └── me/route.ts            (NEW) a DOCUMENTED ALIAS of GET /api/me (doc 08 §14.2)
+├── admin/system/health/route.ts  (NEW) matrix row 52, admin only
+└── ai/triage/route.ts         (NEW) the architecture probe (doc 08 §14.1)
+│
+tests/
+├── stubs/server-only.ts       (NEW) an empty module aliased in vitest.config.ts. The
+│                              bare specifier resolves only through Next's bundler
+└── unit/api/                  (NEW) 5 suites, 266 assertions
+│
+scripts/security-check.cjs     (extended) 22 -> 34 mechanical checks
+```
+
+### 9.2 What was NOT created, and why
+
+| Path | Why not |
+| --- | --- |
+| `lib/repositories/` | §1 P3 declares `lib/` PURE — no Firebase, no `fetch`, no React. A repository that touches Firestore breaks it, and [06 §2.2](./06_BACKEND_ARCHITECTURE.md) forbids `firebase-admin` outside `lib/firebase/*`. [06 §5.1](./06_BACKEND_ARCHITECTURE.md) gives data access to **services**. In this architecture `services/` IS the repository layer |
+| `lib/integrations/{gemini,google-maps,twilio}/` as ADAPTERS | an adapter that calls a provider is I/O, and §1 P3 forbids that in `lib/`. `lib/integrations/contracts.ts` holds the PURE interfaces; `services/integrations/*` holds the adapters |
+| `app/api/{incidents,responders,dispatches,notifications,maps,uploads,analytics,config,resources,cron}/` | **No service, no route.** §1 P6: shared means two or more consumers. An empty route folder is not architecture; it is a directory that reads as progress. [34 §7](./34_BACKEND_INTEGRATION_POINTS.md) names the exact file each will need |
+| `services/{incidents,dispatch,responders,notifications,duplicates,uploads,analytics}/` | same reason. docs/32 MUST 14: a layer with no caller is dead code |
+| `validators/{incident,dispatch,responder,notification,upload,admin,config,geo,report,auth}.ts` | no route consumes them yet. §1 P6 again |
+| `lib/geo/`, `lib/duplicates/`, `lib/incidents/` | Phase 3/4 pure functions. `lib/server/serialize.ts` proves the pattern works |
+
+### 9.3 The import boundary, restated after Phase 3
+
+```text
+  app/api/**/route.ts
+        |  imports: @/services (barrel only), @/lib/server/route, @/lib/server/permissions,
+        |           @/lib/api/envelope, @/validators/*
+        v
+  services/**                        <- NEW in Phase 3
+        |  imports: @/lib/firebase/* or @/lib/server/firebase-admin, @/lib/server/*,
+        |           @/config/*, @/validators/*, @/lib/integrations/contracts
+        v
+  lib/server/*                       <- request plumbing + the trust boundary
+        |  may import: firebase-admin, @/lib/env.server, @/validators/*, @/lib/auth/*
+        |  may NOT import: services/**, @google/genai
+        v
+  lib/**  (pure)                      <- no Firebase, no fetch, no React, no process.env
+                                        except lib/env.server.ts and the 5 documented
+                                        exceptions
+```
+
+**Three rules are enforced mechanically, not by convention:**
+
+| Rule | Mechanism | Where |
+| --- | --- | --- |
+| No client-reachable file imports `@/lib/server/**`, `@/env.server`, `@/env.maintenance`, or `@/services` | `no-restricted-imports` in `eslint.config.mjs` | `components/**`, `features/**` |
+| No module that can read a secret lacks `import 'server-only'` | the import itself, plus a mechanical check | 18 modules |
+| A route handler that talks to Firestore directly | the barrel: `app/api/**` cannot reach the Admin SDK except through a service | `tests/unit/api/route-pipeline.test.ts` |
+
+**A fourth, added in Phase 3 and worth keeping:** the four legitimate `process.env` readers
+outside `lib/env.*` are listed by name in `scripts/security-check.cjs`, so adding a fifth is a
+deliberate edit rather than an accident. Each of them reads `NODE_ENV` or a documented boolean;
+none reads a secret.

@@ -408,6 +408,31 @@ A working sign-in for all four roles; a server-authoritative authorization model
 
 ---
 
+> ## ⚠ PHASE-NUMBERING NOTICE (added after the build, 2026-09-26)
+>
+> The build called "Phase 3" the **backend foundation** — the request pipeline, the service
+> layer, centralized validation/authorization/rate limiting, the Firebase server architecture, the
+> environment-variable system, and the Gemini/Maps/Twilio connection points. **The Phase 3 in
+> this document is a different phase**: the incident create pipeline, the lifecycle table, and
+> the duplicate engine.
+>
+> **The brief is the authority on sequencing; this document is the authority on identifiers.**
+> So the sequence is renumbered rather than argued with, and the two are kept distinguishable:
+>
+> | Name | What it is | Where it is recorded |
+> | --- | --- | --- |
+> | **Phase 3 (built)** | The backend foundation. **Implemented and verified** | [30.4](./30.4_PHASE_3_FOUNDATION.md) |
+> | **§6 Phase 3 (not built)** | Database + incidents + duplicates. **Not started** | this section, unchanged |
+>
+> The Phase 4 brief ("Gemini AI Multimodal Emergency Triage") depends on §6 Phase 3's
+> `CreateIncidentInput` and the create pipeline, so **§6 Phase 3 must be built before or
+> alongside the Gemini work** — its `services/ai/*` is explicitly "Phase 4 adds triage into step
+> 5", and step 5 does not exist yet.
+>
+> Every file path §6 lists is still correct. Nothing §6 specifies was built, and nothing this
+> foundation built is a substitute for it. [34](./34_BACKEND_INTEGRATION_POINTS.md) §4 states
+> exactly which files §6 will create and which of them already exist.
+
 ## 6. Phase 3 — Database + incidents (including 3b: duplicates)
 
 ### 6.1 Objective

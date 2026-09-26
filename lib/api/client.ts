@@ -45,15 +45,21 @@
 
 import { z } from 'zod';
 
-import { isRefreshable } from '@/lib/api/error-codes';
 import {
   errorEnvelopeSchema,
   successEnvelopeSchema,
-  type ApiErrorBody,
   type ApiMeta,
 } from '@/lib/api/envelope';
-import { meResponseSchema, authEventBodySchema, meBootstrapBodySchema, mePatchBodySchema } from '@/validators/me';
-import type { MeResponse } from '@/lib/firebase/auth';
+import { ApiError } from '@/lib/api/errors';
+import {
+  meResponseSchema,
+  authEventBodySchema,
+  meBootstrapBodySchema,
+  mePatchBodySchema,
+  type MeResponse,
+} from '@/validators/me';
+import { aiTriageProbeBodySchema, aiTriageProbeResponseSchema } from '@/validators/ai';
+
 
 /* ========================================================================== */
 /* The token provider seam                                                    */
@@ -84,51 +90,22 @@ export function hasTokenProvider(): boolean {
 /* Errors                                                                     */
 /* ========================================================================== */
 
-export class ApiError extends Error {
-  readonly code: string;
-  readonly status: number;
-  readonly details: ReadonlyArray<{ field: string; issue: string }>;
-  readonly requestId: string;
-  readonly retryAfterSec: number | null;
-  readonly allowed: readonly string[] | null;
-
-  constructor(input: {
-    code: string;
-    message: string;
-    status: number;
-    requestId: string;
-    details?: ReadonlyArray<{ field: string; issue: string }>;
-    retryAfterSec?: number | null;
-    allowed?: readonly string[] | null;
-  }) {
-    super(input.message);
-    this.name = 'ApiError';
-    this.code = input.code;
-    this.status = input.status;
-    this.requestId = input.requestId;
-    this.details = input.details ?? [];
-    this.retryAfterSec = input.retryAfterSec ?? null;
-    this.allowed = input.allowed ?? null;
-  }
-
-  /** `true` for a 401 that a single token refresh may recover. */
-  get isRefreshable(): boolean {
-    return isRefreshable(this.code);
-  }
-
-  /** `true` for "this role can never do this" — a Retry button would lie. */
-  get isPermanentDenial(): boolean {
-    return this.status === 403;
-  }
-
-  /** The first issue for a field, for inline display. */
-  issueFor(field: string): string | null {
-    return this.details.find((d) => d.field === field)?.issue ?? null;
-  }
-}
+/**
+ * `ApiError` now lives in `@/lib/api/errors` so a component can import the
+ * ERROR without importing the fetch machinery, its token seam, and its response
+ * schemas. It is re-exported here because `apiFetch` throws it and every existing
+ * caller imports it from this module; that stays working while the two concerns
+ * are actually separate files.
+ *
+ * The class gained `shouldRetry` and `fieldIssues` in Phase 3 — the difference
+ * between "show a Retry button" and "do not", which is a UI decision that was
+ * previously made by inspecting `status === 403` at each call site.
+ */
+export { ApiError, isApiError, isNetworkFailure, messageFor } from '@/lib/api/errors';
 
 /** Fired when a second 401 proves the session cannot be recovered. */
 export const SESSION_EXPIRED_EVENT = 'cg:session-expired';
+
 
 function dispatchSessionExpired(): void {
   if (typeof window === 'undefined') return;
@@ -317,7 +294,7 @@ export async function apiFetch<TData>(
 }
 
 /* ========================================================================== */
-/* Endpoints — Phase 2                                                        */
+/* Endpoints — Phase 2 and Phase 3                                            */
 /* ========================================================================== */
 
 export type MeBootstrapResult = {
@@ -412,15 +389,138 @@ export async function authEvent(
 /** `GET /api/health` — public liveness. No token. */
 export function getHealth(options: { signal?: AbortSignal } = {}): Promise<{
   status: 'ok' | 'degraded';
+  service: string;
   version: string;
+  uptimeSec: number;
+  timestamp: string;
 }> {
   return apiFetch<unknown>('/api/health', {
     method: 'GET',
     anonymous: true,
     signal: options.signal,
+    // `.passthrough()`-equivalent: the Phase 3 payload added `service`,
+    // `uptimeSec`, and `timestamp` to Phase 2's `{ status, version }`, and an
+    // older cached client must keep working. An unknown response key is dropped
+    // rather than fatal (docs/17 §1.2) — the strict rule is for REQUESTS, where
+    // an unknown key means a version mismatch the caller should hear about.
     parse: (data) =>
-      z.object({ status: z.enum(['ok', 'degraded']), version: z.string() }).safeParse(data),
-  }) as Promise<{ status: 'ok' | 'degraded'; version: string }>;
+      z
+        .object({
+          status: z.enum(['ok', 'degraded']),
+          service: z.string(),
+          version: z.string(),
+          uptimeSec: z.number(),
+          timestamp: z.string(),
+        })
+        .safeParse(data),
+  }) as Promise<{
+    status: 'ok' | 'degraded';
+    service: string;
+    version: string;
+    uptimeSec: number;
+    timestamp: string;
+  }>;
 }
 
-export type { ApiErrorBody };
+/* ========================================================================== */
+/* Endpoints — Phase 3                                                        */
+/* ========================================================================== */
+
+/**
+ * `GET /api/auth/me` — an ALIAS of `GET /api/me`.
+ *
+ * Provided for callers that reach for the `/api/auth/*` grouping. `meGet` below
+ * is the canonical call and is what the session provider uses; this exists so
+ * both paths are exercised and both are known to work.
+ */
+export function authMe(options: { signal?: AbortSignal } = {}): Promise<MeResponse> {
+  return apiFetch<unknown>('/api/auth/me', {
+    method: 'GET',
+    retries: 1,
+    signal: options.signal,
+    parse: (data) => meResponseSchema.safeParse(data),
+  }) as Promise<MeResponse>;
+}
+
+/**
+ * `POST /api/ai/triage` — the architecture probe.
+ *
+ * Returns the fallback outcome in this phase, because no Gemini key is
+ * configured. The POINT of calling it is the `providerAvailable: false` and the
+ * `source: 'fallback'` with `needsReview: true`: it is how a client confirms
+ * the AI boundary is wired and how it renders "AI assistance is not configured
+ * in this deployment" rather than a generic failure.
+ */
+export function aiTriageProbe(
+  input: z.input<typeof aiTriageProbeBodySchema>,
+  options: { signal?: AbortSignal } = {},
+): Promise<z.infer<typeof aiTriageProbeResponseSchema>> {
+  return apiFetch<unknown>('/api/ai/triage', {
+    method: 'POST',
+    body: aiTriageProbeBodySchema.parse(input),
+    signal: options.signal,
+    parse: (data) => aiTriageProbeResponseSchema.safeParse(data),
+  }) as Promise<z.infer<typeof aiTriageProbeResponseSchema>>;
+}
+
+/**
+ * `GET /api/admin/system/health` — operator configuration view. ADMIN ONLY.
+ *
+ * Returns variable NAMES and booleans, never a secret value. A citizen calling
+ * this gets `403 FORBIDDEN`, which `ApiError.isPermanentDenial` reports, so the
+ * UI must not offer a Retry.
+ */
+export function adminSystemHealth(options: { signal?: AbortSignal } = {}): Promise<{
+  status: 'ok' | 'degraded';
+  service: string;
+  version: string;
+  timestamp: string;
+  uptimeSec: number;
+  providers: ReadonlyArray<{
+    provider: string;
+    configured: boolean;
+    requiredVars: readonly string[];
+    problem: string | null;
+  }>;
+  problems: readonly string[];
+}> {
+  return apiFetch<unknown>('/api/admin/system/health', {
+    method: 'GET',
+    signal: options.signal,
+    parse: (data) =>
+      z
+        .object({
+          status: z.enum(['ok', 'degraded']),
+          service: z.string(),
+          version: z.string(),
+          timestamp: z.string(),
+          uptimeSec: z.number(),
+          providers: z.array(
+            z.object({
+              provider: z.string(),
+              configured: z.boolean(),
+              requiredVars: z.array(z.string()),
+              problem: z.string().nullable(),
+            }),
+          ),
+          problems: z.array(z.string()),
+        })
+        .safeParse(data),
+  }) as Promise<{
+    status: 'ok' | 'degraded';
+    service: string;
+    version: string;
+    timestamp: string;
+    uptimeSec: number;
+    providers: ReadonlyArray<{
+      provider: string;
+      configured: boolean;
+      requiredVars: readonly string[];
+      problem: string | null;
+    }>;
+    problems: readonly string[];
+  }>;
+}
+
+export type { MeResponse };
+

@@ -44,6 +44,23 @@ import { fileURLToPath } from 'node:url';
  * transform cost from being misreported as a test failure. A genuinely slow
  * test would still be visible in the per-test timings, and `npm test` would
  * still fail.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY `server-only` IS ALIASED
+ * ---------------------------------------------------------------------------
+ * `import 'server-only'` is a BUILD-TIME poison pill that Next resolves through
+ * its own bundler alias, substituting a module that throws when a Client
+ * Component's graph reaches it. There is no Next bundler under Vitest, so the
+ * bare specifier does not resolve and any suite importing a server module fails
+ * to load.
+ *
+ * It is aliased to an EMPTY module, which is precisely what Next substitutes for
+ * the server condition, and it is correct for a unit test: a Node process is not
+ * a client bundle, so the pill has nothing to protect. The alternative —
+ * deleting the guard from twenty modules to satisfy a test runner — would remove
+ * a real security control, and
+ * `tests/unit/api/route-pipeline.test.ts` asserts every one of those modules
+ * still carries it. No dependency is added.
  */
 export default defineConfig({
   test: {
@@ -58,6 +75,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('.', import.meta.url)),
+      'server-only': fileURLToPath(new URL('./tests/stubs/server-only.ts', import.meta.url)),
     },
   },
 });
