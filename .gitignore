@@ -41,6 +41,14 @@ blob-report/
 *.tsbuildinfo
 next-env.d.ts
 
+# Agent tooling scratch space. These are git WORKTREES — complete second
+# checkouts of this repository, created inside the working directory. Git
+# already declines to descend into one (a directory holding a `.git` file is a
+# separate repository), so this is belt-and-braces against the case where that
+# protection does not apply: a stale or partially-copied worktree would
+# otherwise add a duplicate of every source file to the index.
+.kilo/
+
 # Editor / OS
 .DS_Store
 Thumbs.db

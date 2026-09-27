@@ -161,7 +161,44 @@ export function SessionProvider({
   const [me, setMe] = React.useState<MeResponse | null>(null);
   const [error, setError] = React.useState<SessionState['error']>(null);
   const [isBusy, setIsBusy] = React.useState(false);
-  const [configurationProblem, setConfigurationProblem] = React.useState<string | null>(null);
+
+  /* --- 0. the configuration problem, DERIVED not stored ------------------- */
+  // The single most important line in this file, and it exists because of a bug
+  // worth reading about.
+  //
+  // This was `useState<string | null>(null)` set from a `useEffect`, and the auth
+  // subscription below guarded on it with `if (configurationProblem !== null)
+  // return;`. That guard does not work on the first render, and the failure was
+  // a hard crash rather than a bad-looking page:
+  //
+  //   commit 1, effect 1  isFirebaseConfigured() is false, so it calls
+  //                      setConfigurationProblem(problem) — which SCHEDULES a
+  //                      re-render. It does not mutate the value.
+  //   commit 1, effect 2  reads `configurationProblem` through its closure, which
+  //                      is still the initial `null`. The guard passes.
+  //                      subscribeToAuthState() -> auth() -> getFirebaseClient()
+  //                      -> getPublicConfig() -> throws EnvError.
+  //
+  // React does not wrap effects in try/catch, so that throw became an uncaught
+  // error and the app showed a red screen instead of the setup notice this file's
+  // own header promises. Effect 2 DID list `configurationProblem` in its
+  // dependencies and would have skipped on the second render — but the throw had
+  // already happened.
+  //
+  // The lesson is the shape of the bug, not the bug: **a guard built on state that
+  // starts in the "not yet known" position is not a guard.** It is correct only
+  // after a re-render it has no reason to wait for. Anything that must be known
+  // synchronously on the first commit has to be DERIVED, not stored.
+  //
+  // `useMemo` with an empty dependency array is correct rather than lazy here:
+  // `process.env.NEXT_PUBLIC_*` is inlined at build time, so this value cannot
+  // change for the lifetime of the page. The alternative — a module-level
+  // constant — would be marginally cheaper and would make the value untestable
+  // and un-overridable, which is a worse trade for one string comparison.
+  const configurationProblem = React.useMemo(
+    () => (isFirebaseConfigured() ? null : firebaseConfigurationProblem()),
+    [],
+  );
 
   // Guards against the race that actually bites: `onAuthStateChanged` fires
   // during sign-out with `user === null` while a `GET /api/me` from the previous
@@ -178,12 +215,14 @@ export function SessionProvider({
   }, []);
 
   /* --- 1. configuration ------------------------------------------------- */
+  // `configurationProblem` is already derived (see above), so this effect only
+  // has to move the STATUS. It cannot be folded into the render: `authStatus` is
+  // consumed by `useResolvedSession`, and an early return between two
+  // `useState` calls is a rules-of-hooks violation.
   React.useEffect(() => {
-    if (isFirebaseConfigured()) return;
-    const problem = firebaseConfigurationProblem();
-    setConfigurationProblem(problem);
+    if (configurationProblem === null) return;
     setAuthStatus('unconfigured');
-  }, []);
+  }, [configurationProblem]);
 
   /* --- the profile load ------------------------------------------------- */
   const loadMe = React.useCallback(

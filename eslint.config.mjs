@@ -77,6 +77,21 @@ const eslintConfig = [
       'coverage/**',
       'next-env.d.ts',
       'npm-install.log',
+      // Agent tooling creates git WORKTREES inside the working directory
+      // (`.kilo/worktrees/<name>/`), each a full second checkout of this repo
+      // at the same commit. Git itself will not descend into one — a directory
+      // holding a `.git` file is a separate repository, so `git status` and
+      // `git add` correctly leave it alone. ESLint has no such rule: it recurses
+      // into the duplicate and reports errors in `scripts/*.cjs` that belong to
+      // a checkout nobody is editing.
+      //
+      // The failure mode is worse than noise. Those files are linted under THIS
+      // config but are not THIS source tree, so a red `npm run verify` can be
+      // caused entirely by a file the author never opened — and fixing the copy
+      // instead of the config looks like the fix worked, right up until the
+      // worktree is recreated and the errors return.
+      '.kilo/**',
+      '**/.git/**',
     ],
   },
   ...compat.extends('next/core-web-vitals', 'next/typescript'),
