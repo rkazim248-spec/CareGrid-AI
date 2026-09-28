@@ -229,7 +229,49 @@ export function geminiConfig() {
     audioEnabled: optionalBoolean('GEMINI_AUDIO_ENABLED', true),
     /** FR-024. Below this the UI says "needs review". */
     confidenceReviewThreshold: tunableNumber('AI_CONFIDENCE_REVIEW_THRESHOLD', 0.6, 0, 1),
+    /** docs/09 §12. The ONE repair attempt allowed after a schema failure. */
+    repairAttempts: tunableNumber('AI_REPAIR_ATTEMPTS', 1, 0, 2),
+    /** docs/09 §12. The local RPM/RPD guard. Not the abuse control — see the note there. */
+    localQuotaGuard: optionalBoolean('AI_ENABLE_LOCAL_QUOTA_GUARD', true),
   } as const;
+}
+
+/**
+ * Is the deterministic-response development mode on? brief §26.
+ *
+ * ---------------------------------------------------------------------------
+ * THIS IS THE ONE PLACE THAT DECIDES, AND IT REFUSES PRODUCTION
+ * ---------------------------------------------------------------------------
+ * A "mock" AI is a genuinely dangerous thing to have in an emergency system, and
+ * the danger is specific: a branch that makes triage "succeed" without a provider
+ * is invisible in a demo and catastrophic in production, because every field looks
+ * populated and nothing was actually assessed. docs/32 MUST 7 forbids it, and
+ * `scripts/security-check.cjs` fails the build on a `NODE_ENV`/`DEV` branch in an
+ * integration adapter.
+ *
+ * So the flag is honoured only when ALL of the following hold, and the decision
+ * lives in one function so it cannot be spread across the adapter:
+ *
+ *  1. `AI_MOCK_MODE` is explicitly `true`. Never inferred, never a default.
+ *  2. `NODE_ENV` is not `production` (docs/16's own precedent — `ALLOW_SEED` is
+ *     refused the same way).
+ *  3. `GEMINI_API_KEY` is absent. If a real key is present the real provider is
+ *     used, so enabling the flag by accident in a configured environment cannot
+ *     shadow a working integration.
+ *
+ * Condition 3 is the one that makes this safe in practice: a deployment with a
+ * real key is immune regardless of the flag, and the only environments where the
+ * canned path can activate are ones with no key and therefore already on the
+ * keyword fallback for every other reason.
+ *
+ * It is NOT a `getTriageProvider()` branch, and `services/integrations/gemini/index.ts`
+ * contains no environment read at all — see the check above. The provider class is
+ * selected here and the result is a normal `TriageProvider`.
+ */
+export function isAiMockMode(): boolean {
+  if (process.env.NODE_ENV === 'production') return false;
+  if (!optionalBoolean('AI_MOCK_MODE', false)) return false;
+  return optionalString('GEMINI_API_KEY') === '';
 }
 
 /* --- Google Maps — docs/21 §2, docs/12 ------------------------------------ */
@@ -395,6 +437,25 @@ export function serverEnvProblems(): string[] {
   if (optionalString('RATE_LIMIT_STORE', 'firestore') === 'memory') {
     problems.push(
       'RATE_LIMIT_STORE=memory. A serverless function is a single-use process, so an in-memory counter resets on every cold start and is multiplied by the instance count. Use firestore.',
+    );
+  }
+
+  // Phase 4. brief §26 asks for a development mock, and docs/32 MUST 7 forbids a
+  // provider that can "succeed" without one. Both are satisfiable only if the
+  // flag is reported rather than merely refused at the call site, so this is a
+  // FAULT even in development: a non-empty problem list is what
+  // `/api/admin/system/health` shows an operator, and a mock that is silently on
+  // is exactly the state nobody should be in.
+  //
+  // Two separate messages, because "you have a mock on" and "you have a mock on
+  // IN PRODUCTION" are different urgencies and an operator reading a single
+  // combined sentence cannot tell which they are looking at.
+  if (optionalBoolean('AI_MOCK_MODE', false)) {
+    problems.push(
+      isProduction
+        ? 'AI_MOCK_MODE is TRUE IN A PRODUCTION BUILD. AI triage is returning a canned response instead of calling Gemini, so no emergency report is being assessed. Unset it and redeploy.'
+        : 'AI_MOCK_MODE is enabled, so AI triage returns a canned response instead of calling Gemini. ' +
+          'It is refused in production and ignored whenever GEMINI_API_KEY is set. Unset it before sharing a build.',
     );
   }
 

@@ -21,6 +21,12 @@ import { EvidenceSlots } from '@/features/reporting/evidence-slot';
 import { LocationPanel } from '@/features/reporting/location-panel';
 import { ReviewPanel } from '@/features/reporting/review-panel';
 import { VoiceRecorder } from '@/features/reporting/voice-recorder';
+import { AiTriagePanel, type EditableTriage } from '@/features/reporting/ai-triage-panel';
+import { AI_TRIAGE_COPY } from '@/features/reporting/ai-triage-copy';
+import { mapTriageResponse } from '@/features/reporting/map-triage-response';
+import type { AiTriageResponse, AiTriageStep } from '@/features/reporting/ai-triage-types';
+import { aiTriage } from '@/lib/api/client';
+import { isApiError } from '@/lib/api/errors';
 import {
   EMPTY_DRAFT,
   canSubmit,
@@ -46,14 +52,102 @@ import type { IncidentCategory } from '@/types';
  */
 const SUBMIT_LATENCY_MS = 1000;
 
+/**
+ * How long each analysis step stays on screen.
+ *
+ * brief §17: "If the API returns quickly, don't artificially delay the user
+ * unnecessarily." So the timer is a DISPLAY floor for the early steps only — a
+ * real model call takes seconds, and a step that flashed past in 40 ms reads as
+ * a glitch. The final step is NOT gated on this at all: when the response arrives
+ * the panel switches to the result immediately, whatever the step counter says.
+ *
+ * That is the whole design: pace the beginning so the sequence is legible, never
+ * pace the end.
+ */
+const STEP_INTERVAL_MS = 420;
+
 export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
   const [draft, setDraft] = React.useState<ReportDraft>(EMPTY_DRAFT);
   const [submitting, setSubmitting] = React.useState(false);
   const reasonRef = React.useRef<HTMLParagraphElement | null>(null);
   const counter = React.useRef(0);
   const reasonId = 'report-submit-reason';
+  // A separate id, because two controls each need their own explanation and one
+  // ria-describedby cannot point at two paragraphs.
 
   const ready = canSubmit(draft, REPORT_LIMITS.textMinChars);
+
+  /* --- Phase 4: the AI triage state ------------------------------------- */
+  // `idle` is the absence of the panel. It is not "the AI is off" — the AI may be
+  // unconfigured and the panel will say so when the citizen asks for analysis.
+  const [triageState, setTriageState] = React.useState<'idle' | 'running' | 'done'>('idle');
+  const [triage, setTriage] = React.useState<AiTriageResponse | null>(null);
+  const [triageError, setTriageError] = React.useState<string | null>(null);
+  const [triageStep, setTriageStep] = React.useState<AiTriageStep>(0);
+  // Tracks whether the panel has ever received a `providerAvailable` answer. The
+  // panel's "not configured" state is only truthful once a call has come back, and
+  // a panel that claims a deployment is unconfigured before it has asked is a
+  // panel that guesses.
+  const [triageProviderChecked, setTriageProviderChecked] = React.useState(false);
+  const triageButtonReasonId = 'report-triage-reason';
+  // Guards against a double-click or a re-render firing two model calls.
+  // brief §31: "Disable the Analyze button while an analysis is running", and a
+  // ref rather than the state so two calls in the same tick cannot both see a
+  // stale `false`.
+  const triageInFlight = React.useRef(false);
+
+  // The step timer. Cleared on completion and on unmount, because a timer that
+  // outlives its request keeps calling `setState` on an unmounted component.
+  React.useEffect(() => {
+    if (triageState !== 'running') return;
+    const timer = setInterval(() => {
+      setTriageStep((current) => (current >= 4 ? current : ((current + 1) as AiTriageStep)));
+    }, STEP_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [triageState]);
+
+  const runTriage = React.useCallback(async () => {
+    if (triageInFlight.current) return;
+    triageInFlight.current = true;
+    setTriageState('running');
+    setTriageError(null);
+    setTriageStep(1);
+    try {
+      const response = await aiTriage({
+        text: draft.text,
+        language: 'en',
+        ...(draft.location.placeName === null ? {} : { locationHint: draft.location.placeName }),
+      });
+      setTriage(mapTriageResponse(response));
+      setTriageProviderChecked(true);
+      setTriageState('done');
+    } catch (caught) {
+      // A failure is a rendered state, never a dead end. brief §19: emergency
+      // reporting must remain available when the AI is not.
+      // The server's own sentence, which `docs/16 §4` authors to be shown, and
+      // which already says the report can still be submitted. A network failure
+      // has no such sentence, so the copy table supplies one.
+      setTriageError(isApiError(caught) ? caught.message : AI_TRIAGE_COPY.unavailableBody);
+      setTriageState('running');
+    } finally {
+      triageInFlight.current = false;
+    }
+  }, [draft.text, draft.location.placeName]);
+
+  /**
+   * Apply the citizen's EDITED triage to the draft.
+   *
+   * Only the category is written back — it is the one field the draft already has
+   * and the one the AI genuinely helps with. The summary and the people count are
+   * the citizen's to write in their own report; copying an AI's paraphrase of
+   * their words back over the top of the form would be the AI overwriting the
+   * report, which is the opposite of docs/09 §5.2's "the original report is never
+   * overwritten by AI interpretation".
+   */
+  const applyTriage = React.useCallback((value: EditableTriage) => {
+    setDraft((current) => ({ ...current, category: value.category }));
+    setTriageState('idle');
+  }, []);
 
   const setText = React.useCallback((text: string) => {
     setDraft((current) => ({ ...current, text }));
@@ -191,10 +285,89 @@ export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
                 {REPORT_COPY.categoryTitle}
               </h2>
             </CardHeader>
-            <CardContent>
+            <CardContent className="flex flex-col gap-4">
               <CategorySelector value={draft.category} onChange={setCategory} />
+
+              {/*
+                brief §31: "User completes report -> User presses Analyze -> One
+                AI request", and "Disable the Analyze button while an analysis is
+                running."
+
+                The button is NOT disabled, for the same reason the submit button
+                is not (FR-017, docs/04 §10.4): it stays in the tab order and
+                activating it while a request is in flight is a no-op, announced
+                through `aria-busy` and the reason paragraph below. A `disabled`
+                attribute removes the control from the tab order, so a keyboard user
+                tabbing past it does not learn why it is greyed out.
+
+                It is also never sent on a keystroke. There is no effect here that
+                calls the model, which is the property that actually costs money.
+              */}
+              <div className="flex flex-col gap-1.5">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={runTriage}
+                  loading={triageState === 'running'}
+                  aria-busy={triageState === 'running'}
+                  aria-describedby={triageButtonReasonId}
+                  disabled={!ready}
+                >
+                  {REPORT_COPY.analyseLabel}
+                </Button>
+                <p
+                  id={triageButtonReasonId}
+                  className="text-xs text-secondary"
+                  aria-live="polite"
+                >
+                  {triageState === 'running'
+                    ? AI_TRIAGE_COPY.analysing
+                    : ready
+                      ? REPORT_COPY.analyseHelper
+                      : REPORT_COPY.submitDisabledReason}
+                </p>
+              </div>
             </CardContent>
           </Card>
+
+          {/*
+            -------------------------------------------------------------------
+            PHASE 4: THE AI TRIAGE PANEL
+            -------------------------------------------------------------------
+            Placed BELOW the description, the photos and the location, and ABOVE
+            the review block. The order is the reading order of the decision: what
+            happened, what it looks like, where, what category someone already
+            picked, and then what the AI made of all four.
+
+            It is also below the category selector on purpose. The AI's job is to
+            SUGGEST a category, and a suggestion that appears above the manual
+            control reads as the default — a citizen who has already chosen
+            "Medical" should not then be shown an AI card suggesting "Other" and
+            have to work out which one wins.
+
+            `onApply` writes the citizen's EDITED values into the draft. The panel
+            never writes to the draft on its own: a suggestion that silently
+            overwrote a choice the citizen had already made is how an AI ends up
+            overriding a person, which MUST NOT 8 forbids in the other direction.
+          */}
+          {triageState !== 'idle' || triageProviderChecked ? (
+            <AiTriagePanel
+              response={triageState === 'done' ? triage : null}
+              step={triageStep}
+              error={triageError}
+              // `false` only once a call has actually come back and said so. Until
+              // then it is `true` and the panel shows progress, because a panel
+              // that says "not configured" before it has asked is a panel that
+              // guesses.
+              providerAvailable={triage?.providerAvailable ?? true}
+              onRetry={runTriage}
+              onApply={applyTriage}
+              onDismiss={() => {
+                setTriageState('idle');
+                setTriageError(null);
+              }}
+            />
+          ) : null}
 
           <div className="pb-4 lg:pb-0">
             <ReviewPanel draft={draft} />

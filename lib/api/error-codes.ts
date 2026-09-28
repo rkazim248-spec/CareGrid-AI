@@ -138,6 +138,19 @@ export const ERROR_STATUS = {
    * worse (docs/16 D-16-8).
    */
   AI_QUOTA: 503,
+  /**
+   * The model answered, and the answer was not a valid triage record.
+   *
+   * Added in Phase 4. `422` and not `502`: the upstream provider worked fine, so
+   * this is not an availability problem and a client retrying a `502` would get
+   * the same invalid record again. It is also deliberately NOT surfaced to a
+   * citizen as a failure — `triageIncident()` catches it, runs the keyword
+   * fallback, and records `outcome: 'validation_failed'` on `aiRuns`. A citizen
+   * whose report reached the model and came back malformed still has their
+   * report filed and a human looking at it; the 422 exists so an operator can
+   * see the rate in `/api/admin/system/health` without reading model output.
+   */
+  AI_OUTPUT_INVALID: 422,
   /** The global handler budget in `REQUEST_TIMEOUT_MS` was exceeded (docs/16 §3.11). */
   TIMEOUT: 504,
 } as const satisfies Record<string, number>;

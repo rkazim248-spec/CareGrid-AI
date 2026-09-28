@@ -92,7 +92,83 @@ export const aiTriageProbeBodySchema = strictObject({
 
   /** How many audio clips are ATTACHED. FR-006 caps this at one. */
   audioCount: z.coerce.number().int().min(0).max(1).default(0),
+
+  /**
+   * One image, inline, as base64.
+   *
+   * ---------------------------------------------------------------------------
+   * PHASE 4 ADDED THIS, AND IT IS THE ONE FIELD THAT CARRIES BYTES
+   * ---------------------------------------------------------------------------
+   * The `imageCount` above is a number: safe to log, safe to rate-limit on, safe
+   * to render. This field is not any of those things, which is why it is bounded
+   * three ways and why the bounds live in a schema rather than in prose.
+   *
+   * | Bound | Value | Why |
+   * | --- | --- | --- |
+   * | `max` on the array | 3 | FR-005, and `AI_MAX_IMAGES`. |
+   * | each string | 7 MB | Base64 of a 5 MB file, the per-image ceiling in `media.ts`. 7 MB covers 5 MB × 1.37 plus slack, so a legal file is never rejected for its encoding. |
+   * | whole request | `ABSOLUTE_MAX_BODY_BYTES` | `lib/server/validate.ts` rejects the request before this runs. |
+   *
+   * The **content** is not validated here. A schema cannot check a byte signature
+   * without base64-decoding the string, and doing that inside a request validator
+   * would make the common path pay for the uncommon one. `validateImage` does it,
+   * immediately after this, and the route cannot proceed without it — so the
+   * ordering in the handler is the control, and this schema's job is only to stop
+   * an oversized or over-numerous payload reaching the provider.
+   *
+   * The `mimeType` and `fileName` here are **claims**, checked against the file's
+   * own signature in `media.ts` and never trusted. They are accepted so the error
+   * message can say what the client THOUGHT it was sending, which is the single
+   * most useful thing in a "your file is not a JPEG" error.
+   */
+  images: z
+    .array(
+      z
+        .object({
+          /** A CLAIM. Verified against the bytes. */
+          mimeType: z.string().trim().max(120).optional(),
+          /** The client's filename. A CLAIM, and stripped of any path. */
+          fileName: z.string().trim().max(200).optional(),
+          /**
+           * A bare base64 string OR a `data:` URL, because a browser `FileReader`
+           * produces the latter and requiring a client to strip the prefix before
+           * sending is a step someone will forget.
+           *
+           * The character class excludes whitespace deliberately: a pasted base64
+           * blob with newlines is not the same input as one without, and silently
+           * accepting it would make the decoded length differ from the length this
+           * schema approved.
+           */
+          data: z
+            .string()
+            .min(1)
+            .max(7 * 1024 * 1024)
+            .regex(/^(data:image\/[a-z0-9.+-]+;base64,)?[A-Za-z0-9+/]+={0,2}$/i, 'Send raw base64 or a data URL.'),
+        })
+        // `.strict()` so a client cannot smuggle a `storagePath` or a `url` field
+        // in alongside the bytes. Anything a server adds later is added to the
+        // schema, not accepted by accident.
+        .strict(),
+    )
+    .max(3)
+    .optional()
+    .default([]),
 });
+
+/**
+ * A single validated image, from `services/ai/media.ts`.
+ *
+ * Exported as a type so the route and the service agree on the shape without the
+ * validator importing the media module — `validators/**` is shared with the client
+ * and `media.ts` imports `node:crypto`.
+ */
+export type TriagedImage = {
+  readonly mimeType: string;
+  readonly base64: string;
+  readonly sha256: string;
+  readonly byteLength: number;
+  readonly fileName: string;
+};
 
 export type AiTriageProbeBody = z.infer<typeof aiTriageProbeBodySchema>;
 
@@ -117,6 +193,42 @@ export const aiTriageProbeResponseSchema = z.object({
     providerName: z.string(),
     model: z.string(),
     promptVersion: z.string(),
+    /**
+     * docs/09 §7.1. What actually happened, which is NOT the same as `source`:
+     * a `fallback` source can be an unconfigured deployment, a timeout, a quota
+     * stop, a schema failure, or a safety block, and those have different
+     * implications for a user and for an operator.
+     *
+     * Exposed because a client that renders "AI is unavailable" for all five is
+     * telling a user something that is not true in four of them.
+     */
+    outcome: z.enum([
+      'success',
+      'fallback',
+      'timeout',
+      'error',
+      'blocked',
+      'validation_failed',
+    ]),
+    /**
+     * How the model arrived at this record.
+     *
+     * `promptVersion` and `model` were already here; `attempt` is new and is the
+     * difference between "the model answered" and "the model answered wrong once
+     * and was asked again" (docs/09 §8). A record produced by the repair call is
+     * worth knowing about, because repair rate is the leading indicator of
+     * schema drift.
+     */
+    attempt: z.number().int().min(1).max(2).nullable(),
+    /**
+     * `true` when the AI's own confidence is below the review threshold.
+     *
+     * Redundant with `needsReview` today, and kept for one reason: a client
+     * rendering a confidence meter needs to distinguish "needs review because the
+     * model was unsure" from "needs review because the AI was unavailable", and
+     * `confidence: null` is the only way to tell them apart.
+     */
+    lowConfidence: z.boolean(),
   }),
   /**
    * `true` when the AI provider is configured and reachable. Exposed so a
@@ -125,6 +237,32 @@ export const aiTriageProbeResponseSchema = z.object({
    * without reading a server log.
    */
   providerAvailable: z.boolean(),
+  /**
+   * `true` when the answer came from the development mock rather than Gemini.
+   *
+   * Phase 4, brief §26. This is the field that makes a mock HONEST rather than
+   * merely isolated: a demo built with `AI_MOCK_MODE` on says so on screen, so a
+   * canned response can never be mistaken for an assessment. It is `true` ONLY
+   * when the mock actually produced the result, and it is not the same as
+   * `providerAvailable` — a deployment with a real key can never report it.
+   */
+  simulated: z.boolean(),
+  /**
+   * Images the model did NOT see, and how many it did.
+   *
+   * docs/09 §4.2: "Dropping is logged, never silent." A caller that attached three
+   * photos and is told the model saw one can decide whether to resubmit; a caller
+   * that is told nothing believes the model saw three.
+   */
+  mediaCount: z.number().int().min(0),
+  mediaDropped: z.array(z.string()),
+  /**
+   * The `aiRuns` document id, or `null`.
+   *
+   * Present so a dispatcher can trace a record to its audit entry. `null` in an
+   * unconfigured deployment, which is not an error.
+   */
+  aiRunId: z.string().nullable(),
 });
 
 export type AiTriageProbeResponse = z.infer<typeof aiTriageProbeResponseSchema>;

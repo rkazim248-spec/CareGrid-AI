@@ -20,6 +20,7 @@
     "verify": "npm run typecheck && npm run lint && npm run test && npm run security:check && npm run build"
   },
   "dependencies": {
+    "@google/genai": "^2.24.0",
     "@hookform/resolvers": "^5.9.1",
     "@radix-ui/react-avatar": "^1.1.10",
     "@radix-ui/react-checkbox": "^1.3.2",

@@ -55,6 +55,23 @@ export const REPORT_COPY = {
   categoryTitle: 'Category',
   categoryLead: 'Optional. CareGrid AI will suggest one and a dispatcher confirms it.',
 
+  /**
+   * Phase 4. The AI action.
+   *
+   * "Analyse with AI" rather than "Get AI help" or "Auto-fill": the verb is the
+   * system's actual capability and nothing more. It does not say "detect", which
+   * would promise a certainty this product cannot deliver, and it does not say
+   * "suggest a category", which would understate what the panel shows.
+   *
+   * The helper says what happens, because a button labelled with "AI" on a form
+   * someone is filling in during an emergency needs its consequence stated: a
+   * request goes to a third-party service. docs/04 §15 requires the disclaimer to
+   * be visible ON the form rather than in a footer.
+   */
+  analyseLabel: 'Analyse with AI',
+  analyseHelper:
+    'Sends your description to CareGrid AI to suggest a category and urgency. You can change everything it suggests. Nothing is sent or dispatched automatically.',
+
   reviewTitle: 'Review your report',
 
   submitLabel: 'Submit Emergency Report',

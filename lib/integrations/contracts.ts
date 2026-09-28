@@ -43,6 +43,30 @@ import type { IncidentCategory, SafetyFlag, Urgency } from '@/types/enums';
 /* ========================================================================== */
 
 /**
+ * One evidence image, already validated.
+ *
+ * The base64 payload rides on the request because docs/09 §4.2 specifies inline
+ * data: "No Files API, no GCS URI uploads. Inline base64 keeps the request
+ * auditable and avoids a second service."
+ *
+ * This is a structural copy rather than an import from `services/ai/media.ts`, and
+ * that is deliberate. `media.ts` is server-side and imports `node:crypto` for the
+ * digest; `contracts.ts` is the ONE file a Client Component and a unit test are
+ * both allowed to import (docs/30.4 §6 D-6). Importing the type would be erased
+ * at compile time, but re-declaring it here means the contract file's purity is
+ * a property of its imports rather than of a compiler flag, and
+ * `scripts/security-check.cjs` can assert it.
+ */
+export type TriageImage = {
+  /** From the file SIGNATURE, never from what the client declared. */
+  readonly mimeType: string;
+  readonly base64: string;
+  readonly sha256: string;
+  readonly byteLength: number;
+  readonly fileName: string;
+};
+
+/**
  * What a provider needs to be told about the request.
  *
  * A `TriageRequest` is the ONLY thing the AI is ever shown about an incident,
@@ -64,7 +88,39 @@ export type TriageRequest = {
   readonly audioCount: number;
   /** `true` when this account is under five minutes old (FR-135 S9). */
   readonly newAccount: boolean;
+  /**
+   * The image BYTES, when the caller has them.
+   *
+   * Added in Phase 4 for the multimodal path (brief §12, docs/09 §4.2). Optional
+   * and absent by default, so the text-only path — which is what a report with no
+   * photo uses, and what every existing caller does — is entirely unchanged.
+   *
+   * The split between `imageCount` and `images` is the point of having both.
+   * `imageCount` was always safe to log, to rate-limit on, and to render: it is a
+   * number. `images` is not. It is typed as validated base64 rather than as a URL
+   * for two reasons: a URL would make the provider do I/O, which docs/20 §1 P3
+   * forbids in a pure contract file, and it would put a resolvable handle for a
+   * citizen's photograph into a third party's request.
+   */
+  readonly images?: readonly TriageImage[];
 };
+
+/**
+ * Which attempt produced this record, and why it is on the OUTCOME and not here.
+ *
+ * docs/09 §8: the first call may fail schema validation, and exactly ONE repair
+ * call follows. A record produced by the repair is worth distinguishing from a
+ * first-attempt record, because a rising repair rate is the earliest visible
+ * signal of schema drift — the model has started disagreeing with a contract that
+ * has not changed.
+ *
+ * It lives on `TriageOutcome` rather than on `TriageResult` because it describes
+ * the CALL, not the content, and a provider that implements the narrow
+ * `TriageResult` shape has nothing meaningful to say about it. `null` means no
+ * model call was made at all, which is every fallback and every unconfigured
+ * deployment.
+ */
+export type TriageAttempt = 1 | 2;
 
 /**
  * What a provider must return, and MUST NOT exceed.

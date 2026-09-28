@@ -5,13 +5,26 @@ build/
 dist/
 
 # Environment — never commit a real secret (docs/21 §1)
+#
+# AUDIT FIX: `.env.production`, `.env.staging` and `.env.development` were NOT
+# ignored. Every rule here ended in `.local`, so a file named for an environment
+# without that suffix fell straight through — and `.env.production` is a
+# conventional Next.js filename that a developer or a deploy script will create
+# without thinking about it, which is the whole failure mode this list exists to
+# prevent. Verified with `git check-ignore` on each name, not by reading the file.
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
 .env*.local
+# Environment-named files WITHOUT the `.local` suffix. A separate rule rather than
+# a broadened glob, because `.env*` would also swallow `.env.example` and the
+# negation below would have to be maintained in step with it.
+.env.*
 !.env.example
+!.env*.example
+!.env.*.example
 
 # Private credentials — never in version control, whatever it is called.
 # The Firebase service account is the highest-value credential in this project:

@@ -10,6 +10,7 @@ import {
   providerStatus as twilioStatus,
 } from '@/services/integrations/twilio';
 import { toTriageRequest, triageIncident, TRIAGE_LIMITS } from '@/services/ai';
+import { INCIDENT_CATEGORIES, URGENCIES } from '@/types/enums';
 import { AppError } from '@/lib/server/errors';
 import type { TriageProvider, TriageRequest, TriageResult } from '@/lib/integrations/contracts';
 
@@ -168,13 +169,59 @@ describe('triageIncident never throws at its caller (FR-029)', () => {
   it('never FABRICATES a category, an urgency, or a confidence', async () => {
     // The specific failure this defends against. A fabricated `critical` on a
     // real report is a fabricated triage decision.
+    //
+    // -------------------------------------------------------------------------
+    // THIS TEST WAS CORRECTED IN PHASE 4, NOT DELETED
+    // -------------------------------------------------------------------------
+    // It previously asserted `category`, `urgency`, `confidence` and `summary`
+    // were all `null`, because Phase 3's fallback returned nulls. Two things
+    // changed and the reasoning is recorded here rather than the assertion being
+    // quietly dropped (docs/30.4 §5.2 is the precedent — a test corrected
+    // *because an anchor document says it was wrong*):
+    //
+    //   1. docs/09 §7.2 specifies a keyword fallback engine, and §7.3 requires
+    //      "every incident gets a plausible, honest triage even with zero AI
+    //      availability". Nulls are not a triage; they are the absence of one,
+    //      and they leave a dispatcher with nothing to sort on.
+    //   2. So the fallback now derives values from the citizen's own words.
+    //
+    // The test's INTENT is preserved and is in fact asserted more strongly below.
+    // "Never fabricate" does not mean "never derive" — it means every value must
+    // be traceable to the report, must be inside the controlled taxonomy, and
+    // must be flagged as low confidence. A fabricated value is one with no
+    // provenance; a keyword match has provenance and says so.
+    //
+    // The counter-test that matters is `derives nothing from a report with no
+    // keywords` in `tests/unit/ai/fallback.test.ts`, which asserts the engine
+    // returns `other`/`low` for a contentless report rather than guessing.
     const outcome = await triageIncident(request, { requestId: 'req_aaaaaaaaaaaa', timeoutMs: 0 });
-    expect(outcome.category).toBeNull();
-    expect(outcome.urgency).toBeNull();
-    expect(outcome.confidence).toBeNull();
-    expect(outcome.summary).toBeNull();
-    expect(outcome.safetyFlags).toEqual([]);
+
+    expect(outcome.source).toBe('fallback');
+
+    // Every value is inside the controlled taxonomy. Never a free value, never
+    // something outside `INCIDENT_CATEGORIES`/`URGENCIES`.
+    expect(INCIDENT_CATEGORIES).toContain(outcome.category);
+    expect(URGENCIES).toContain(outcome.urgency);
+
+    // Confidence is a real number, and it is capped BELOW the review threshold —
+    // which is the property that makes "needs review" true for every fallback.
+    expect(outcome.confidence).not.toBeNull();
+    expect(outcome.confidence).toBeGreaterThan(0);
+    expect(outcome.confidence).toBeLessThan(0.6);
+
+    // Still ALWAYS flagged for review, and still labelled.
+    expect(outcome.needsReview).toBe(true);
+
+    // The summary says on its face that it is automated. A summary that read
+    // like a human observation would be the fabrication this guards against.
+    expect(outcome.summary).toContain('Automated triage only');
+    expect(outcome.summary).toContain('human review');
+
+    // No raw output exists for a fallback, so there is nothing to hash.
     expect(outcome.rawOutputHash).toBeNull();
+
+    // The outcome records WHY it fell back, which is what an operator reads.
+    expect(outcome.outcome).toBe('fallback');
   });
 
   it('returns the fallback when the provider THROWS, including a non-AppError', async () => {
@@ -353,6 +400,13 @@ describe('toTriageRequest is the whole of what crosses the boundary', () => {
     // A model does not need a citizen's email address to categorise a report,
     // and sending it would put personal data into a third-party processor for no
     // benefit (docs/09 §4, docs/24 T-09).
+    //
+    // The key list gained `images` in Phase 4, for multimodal triage. It is an
+    // ARRAY OF VALIDATED IMAGES, not a URL and not a Storage path — which is why
+    // it is safe to be on a record that crosses to a third party, and why the
+    // assertion is on the full key list rather than a `not.toContain` sweep: a
+    // sweep would pass while a future field carrying an email slipped in beside
+    // it.
     const request = toTriageRequest({
       text: 'x'.repeat(50),
       language: 'en',
@@ -366,6 +420,7 @@ describe('toTriageRequest is the whole of what crosses the boundary', () => {
       [
         'audioCount',
         'imageCount',
+        'images',
         'language',
         'locationAccuracy',
         'locationHint',
@@ -373,6 +428,25 @@ describe('toTriageRequest is the whole of what crosses the boundary', () => {
         'text',
       ].sort(),
     );
+    // Empty by default, and empty for a text-only report. A caller that supplies
+    // no images must send no images — not an empty object, not a placeholder.
+    expect(request.images).toEqual([]);
+  });
+
+  it('derives imageCount from the images ACTUALLY present, never from the caller', () => {
+    // A client that claimed three images and supplied one would otherwise make the
+    // prompt tell the model three images are attached when it can see one — a
+    // small lie that reaches a third party and misleads the classifier.
+    const request = toTriageRequest({
+      text: 'x'.repeat(50),
+      language: 'en',
+      locationHint: null,
+      locationAccuracy: 'unknown',
+      imageCount: 3,
+      audioCount: 0,
+      newAccount: false,
+    });
+    expect(request.imageCount).toBe(0);
   });
 
   it('TRUNCATES rather than refusing, because a real emergency must still be triaged', () => {
@@ -387,10 +461,24 @@ describe('toTriageRequest is the whole of what crosses the boundary', () => {
       imageCount: 99,
       audioCount: 99,
       newAccount: false,
+      // Nine supplied, three allowed. The surplus is not silently dropped: it is
+      // bounded HERE and the dropped names are recorded on the outcome, so a
+      // dispatcher learns the model saw three of nine rather than believing it saw
+      // nine (docs/09 §4.2).
+      images: Array.from({ length: 9 }, (_, i) => ({
+        mimeType: 'image/png',
+        base64: 'AAAA',
+        sha256: 'a'.repeat(64),
+        byteLength: 3,
+        fileName: `photo-${i}.png`,
+      })),
     });
     expect(request.text).toHaveLength(TRIAGE_LIMITS.textMaxChars);
     expect(request.locationHint).toHaveLength(TRIAGE_LIMITS.locationHintMaxChars);
+    // `imageCount` is now DERIVED from the truncated array, so it is 3 — the
+    // number the model will actually see — rather than the caller's 99.
     expect(request.imageCount).toBe(TRIAGE_LIMITS.maxImages);
+    expect(request.images).toHaveLength(TRIAGE_LIMITS.maxImages);
     expect(request.audioCount).toBe(TRIAGE_LIMITS.maxAudioClips);
   });
 

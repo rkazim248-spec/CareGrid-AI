@@ -20,6 +20,11 @@
 
 const { readFileSync, readdirSync, statSync, existsSync } = require('node:fs');
 const { join, extname } = require('node:path');
+// Phase 4 audit. Used ONLY by the `.gitignore` coverage check, which asks git to
+// resolve the patterns rather than reimplementing gitignore semantics — a
+// hand-rolled matcher eventually disagrees with git, and a security check that
+// disagrees with git is worse than none.
+const { execFileSync } = require('node:child_process');
 
 const ROOT = process.cwd();
 const SKIP = new Set(['node_modules', '.next', '.git', 'docs', 'coverage']);
@@ -214,6 +219,103 @@ const ignored = /^\.env\*?\.local/m.test(gitignore) || /^\.env$/m.test(gitignore
 const localAbsent = !existsSync(join(ROOT, '.env.local'));
 check('.env.local is git-ignored', ignored);
 check('.env.local is not committed', localAbsent, localAbsent ? '' : '.env.local exists in the tree');
+
+/**
+ * EVERY env filename that must be ignored, actually is — checked by BEHAVIOUR.
+ *
+ * The assertion above is `A || B || C` over three patterns, so it passes as soon
+ * as ANY of them is present, and it says nothing about which files those patterns
+ * cover. That is how a real gap survived an audit: the patterns were all present,
+ * the check was green, and `.env.production` was not ignored — because every rule
+ * in the file ended in `.local` and `.env.production` does not.
+ *
+ * `.env.production` is a conventional Next.js filename. A developer or a deploy
+ * script creates it without thinking about it, which is exactly the moment this
+ * list is supposed to save them from. So this check names the FILES and asks git
+ * to resolve the patterns, rather than reading the patterns and hoping.
+ *
+ * `check-ignore -q` is a real invocation, not a reimplementation of gitignore
+ * semantics — reimplementing them is how a second tool ends up disagreeing with
+ * the first. `--no-index` is implied by passing a name that does not exist on
+ * disk, so this works on a clean checkout with no `.env.local` present.
+ */
+const MUST_IGNORE = [
+  '.env',
+  '.env.local',
+  '.env.development.local',
+  '.env.test.local',
+  '.env.production.local',
+  // The three that the audit found uncovered. They have no `.local` suffix, so a
+  // list of `.local` rules misses all of them.
+  '.env.production',
+  '.env.staging',
+  '.env.development',
+];
+/** Must stay COMMITTED — an ignored example defeats the purpose of an example. */
+const MUST_COMMIT = ['.env.example', '.env.production.example'];
+
+function gitIgnores(name) {
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--no-index', name], {
+      cwd: ROOT,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    // Exit 1 means "not ignored", which is an answer rather than a failure.
+    return false;
+  }
+}
+
+const notIgnored = MUST_IGNORE.filter((name) => !gitIgnores(name));
+const wronglyIgnored = MUST_COMMIT.filter((name) => gitIgnores(name));
+check(
+  'Every .env filename is git-ignored, including the ones without a .local suffix',
+  notIgnored.length === 0,
+  `not ignored: ${notIgnored.join(', ')}`,
+);
+check(
+  '.env.example stays committable (an ignored example is a useless example)',
+  wronglyIgnored.length === 0,
+  `wrongly ignored: ${wronglyIgnored.join(', ')}`,
+);
+
+/**
+ * NO CREDENTIAL-CLASS VARIABLE IS POPULATED IN `.env.example`.
+ *
+ * The existing check covers a fixed list of names. This one is the complement:
+ * it walks EVERY assignment in the file and fails on any whose VALUE is non-empty
+ * for a name that looks like a credential — so adding `SOME_NEW_API_TOKEN=` with
+ * a real value is caught by the pattern rather than by remembering to extend a
+ * list.
+ *
+ * `NEXT_PUBLIC_*` is EXCLUDED, and deliberately. The Firebase web config and the
+ * Maps browser key are public by construction — they ship to every browser and
+ * are protected by API/HTTP-referrer restriction instead (docs/10 §14.3, B3).
+ * Treating them as secrets is the mistake docs/24 T-14 is careful to avoid, and a
+ * check that flagged them would push someone toward NOT shipping a key that has
+ * to ship.
+ */
+const SECRET_NAME = /(KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|PRIVATE|SALT)/i;
+const populatedCredentials = [];
+for (const line of envExample.split('\n')) {
+  const bare = line.split('#')[0].trim();
+  const match = bare.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+  if (!match) continue;
+  const [, name, rawValue] = match;
+  if (name.startsWith('NEXT_PUBLIC_')) continue;
+  if (!SECRET_NAME.test(name)) continue;
+  // A trailing `# comment` is not a value. `.env.production=` followed by prose is
+  // the documented house style in this repo, and reading the comment as a secret
+  // would flag the very lines that are the safest in the file.
+  const value = rawValue.split('#')[0].trim();
+  if (value !== '') populatedCredentials.push(name);
+}
+check(
+  'No credential-class variable is populated in .env.example',
+  populatedCredentials.length === 0,
+  `populated: ${populatedCredentials.join(', ')}`,
+);
 
 /**
  * Credential files are ignored BY EXTENSION, not by name.
@@ -504,7 +606,12 @@ const SERVER_MODULES = [
   'services/auth/account.ts',
   'services/admin/system-health.ts',
   'services/ai/triage.ts',
+  'services/ai/audit.ts',
+  // Phase 4. `client.ts` constructs the `GoogleGenAI` client, which is a
+  // credentialed SDK handle, and `index.ts` is the policy layer above it. Both are
+  // banned from the client tree by the guard AND by check 9 below.
   'services/integrations/gemini/index.ts',
+  'services/integrations/gemini/client.ts',
   'services/integrations/google-maps/index.ts',
   'services/integrations/twilio/index.ts',
 ];
@@ -537,6 +644,118 @@ check(
   'lib/integrations/contracts.ts stays pure (no guard, no env, no SDK)',
   contractsIsPure,
   'the contract file must be importable from a client bundle and a unit test',
+);
+
+/**
+ * `services/ai/schema.ts` is pure for the same reason, and the same reason makes
+ * this a separate assertion rather than a clause above.
+ *
+ * doc 09 §3 requires `lib/validation/ai.ts` to re-export the Zod schema "so both
+ * client and server share one definition". That requirement only works if the
+ * module is importable from a Client Component, which means it must not carry the
+ * `server-only` guard and must not import anything that can reach a secret.
+ *
+ * This check is the thing that makes the exclusion in the list above defensible
+ * rather than merely asserted in a comment: adding `import 'server-only'` to
+ * `schema.ts` would break every AI test, and importing `@google/genai` or
+ * `node:crypto` into it would put a provider SDK into a client bundle. Both fail
+ * here with the file named.
+ */
+const schemaPath = 'services/ai/schema.ts';
+const schemaIsPure =
+  existsSync(join(ROOT, schemaPath)) &&
+  !/^\s*import 'server-only';/m.test(read(schemaPath)) &&
+  !code(schemaPath).includes('process.env') &&
+  !code(schemaPath).includes('fetch(') &&
+  !/@google\/genai/.test(code(schemaPath)) &&
+  // `sanitize.ts` and `rules.ts` are pure by the same argument, and they are
+  // reachable from a future client-side preview, so the rule is stated once as a
+  // list rather than copied three times.
+  ['services/ai/prompts.ts', 'services/ai/sanitize.ts', 'services/ai/rules.ts', 'services/ai/fallback.ts'].every(
+    (path) =>
+      existsSync(join(ROOT, path)) &&
+      !/^\s*import 'server-only';/m.test(read(path)) &&
+      !code(path).includes('process.env'),
+  );
+check(
+  'The AI schema and rules stay pure (shareable with the client)',
+  schemaIsPure,
+  'schema/prompts/sanitize/rules/fallback must stay importable without the guard or an env read',
+);
+
+/**
+ * THE AI OUTPUT SCHEMA IS `.strict()`, AND THAT IS A SAFETY CONTROL.
+ *
+ * docs/09 §5.1: "any extra key is a validation failure — this is the primary
+ * defence against a manipulated model returning a `dispatch: true` field."
+ *
+ * The prompt cannot be relied on to stop that, and the caller only reads named
+ * fields, so the barrier is the schema itself. `.strict()` is easy to lose to a
+ * well-meaning edit — `z.object({...})` and `z.object({...}).strict()` are
+ * interchangeable-looking, and nothing else fails when it is dropped. This check
+ * exists so the loss is a build failure rather than a phase where a persuasive
+ * model dispatches someone.
+ */
+const aiSchemaText = existsSync(join(ROOT, schemaPath)) ? code(schemaPath) : '';
+check(
+  'The AI output schema is .strict()',
+  /\.object\([\s\S]*?\)\s*\.strict\(\)/.test(aiSchemaText),
+  'services/ai/schema.ts must end its output object with .strict()',
+);
+
+/**
+ * THE AI CANNOT DISPATCH, AND THE TYPE IS THE PROOF.
+ *
+ * docs/09 §1.2 and MUST NOT 8. A `TriageResult` with a field for a coordinate, a
+ * casualty count, or a resource would be an invitation, and the prohibition has to
+ * be structural rather than a convention someone could forget — there is no code
+ * review at the moment a model returns something unexpected.
+ *
+ * The check is on the TYPE, not on a grep for "dispatch" in the implementation,
+ * because a dispatch field could be named anything.
+ */
+const contractsText = existsSync(join(ROOT, contractsPath)) ? code(contractsPath) : '';
+const resultBlock = contractsText.match(/export type TriageResult = \{[\s\S]*?\n\};/);
+const forbiddenResultFields = ['dispatch', 'responderId', 'latitude', 'longitude', 'lat', 'lng', 'coordinates', 'diagnosis', 'peopleAffected', 'assignedTo'];
+const leakedFields = resultBlock
+  ? forbiddenResultFields.filter((field) => new RegExp(`\\b${field}\\b`).test(resultBlock[0]))
+  : ['(TriageResult not found)'];
+check(
+  'TriageResult cannot carry a dispatch, a coordinate, or a casualty count',
+  leakedFields.length === 0,
+  `forbidden field(s) in TriageResult: ${leakedFields.join(', ')}`,
+);
+
+/**
+ * THE MOCK IS REFUSED IN PRODUCTION, MECHANICALLY.
+ *
+ * brief §26 asks for `AI_MOCK_MODE`; docs/32 MUST 7 forbids a provider that can
+ * "succeed" without one. The reconciliation is that the flag is honoured only
+ * when it is not production AND no real key is present, and this check verifies
+ * the REFUSAL is in the code rather than trusting the comment that says it is.
+ *
+ * A mock that reached production would be the most dangerous line in the project:
+ * every field would look populated and nothing would have been assessed.
+ */
+const envServerText = existsSync(join(ROOT, 'lib/env.server.ts')) ? code('lib/env.server.ts') : '';
+check(
+  'AI_MOCK_MODE is refused in production and shadowed by a real key',
+  /isAiMockMode[\s\S]*?NODE_ENV\s*===\s*'production'[\s\S]*?return false/.test(envServerText) &&
+    /isAiMockMode[\s\S]*?GEMINI_API_KEY/.test(envServerText) &&
+    /AI_MOCK_MODE is enabled/.test(envServerText),
+  'lib/env.server.ts must refuse AI_MOCK_MODE in production and ignore it when a key exists',
+);
+
+/**
+ * `AI_MOCK_MODE` IS EMPTY IN `.env.example`.
+ *
+ * A checked-in example with the flag ON is a deployment that inherits it, and the
+ * whole point of the production refusal is a second line of defence.
+ */
+check(
+  'AI_MOCK_MODE is empty in .env.example',
+  !/^AI_MOCK_MODE=.+/m.test(envExample),
+  'AI_MOCK_MODE must ship empty',
 );
 
 /* ------------------------------------------------------------------------ */

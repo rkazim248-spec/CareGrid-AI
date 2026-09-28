@@ -443,15 +443,34 @@ export function authMe(options: { signal?: AbortSignal } = {}): Promise<MeRespon
 }
 
 /**
- * `POST /api/ai/triage` — the architecture probe.
+ * `POST /api/ai/triage` - the citizen-facing triage call.
  *
- * Returns the fallback outcome in this phase, because no Gemini key is
- * configured. The POINT of calling it is the `providerAvailable: false` and the
- * `source: 'fallback'` with `needsReview: true`: it is how a client confirms
- * the AI boundary is wired and how it renders "AI assistance is not configured
- * in this deployment" rather than a generic failure.
+ * ---------------------------------------------------------------------------
+ * PHASE 4: THIS IS NO LONGER A PROBE
+ * ---------------------------------------------------------------------------
+ * In Phase 3 this returned the fallback unconditionally, and its purpose was to
+ * prove the pipeline degraded honestly. It now performs real triage when
+ * `GEMINI_API_KEY` is set, and falls back to the keyword engine when it is not.
+ * The response contract gained `outcome`, `attempt`, `lowConfidence`, `simulated`,
+ * `mediaCount`, `mediaDropped` and `aiRunId`; see `validators/ai.ts` for why each
+ * exists, and `docs/30.5` for the phase record.
+ *
+ * The name is kept rather than renamed to `aiTriage`. A rename would be a
+ * second breaking change to every call site for a benefit no caller can observe,
+ * and the docs' endpoint list names this path.
+ *
+ * **`retries` is deliberately absent.** `apiFetch`'s default retry behaviour
+ * applies to network-level failures, and a retried POST is a second model call:
+ * the per-user rate limit in `RATE_LIMIT_RULES` is the abuse control, and a
+ * silent client-side retry would spend quota behind the user's back. The server
+ * already retries `429`/`503` internally with a documented backoff, so the two
+ * layers must not stack.
+ *
+ * The returned type is the SERVER's schema, and `features/reporting/ai-triage-types.ts`
+ * maps it to the client's `AiTriageResponse`. The mapping is one function so the
+ * narrowing from `string[]` to `SafetyFlag[]` happens in exactly one place.
  */
-export function aiTriageProbe(
+export function aiTriage(
   input: z.input<typeof aiTriageProbeBodySchema>,
   options: { signal?: AbortSignal } = {},
 ): Promise<z.infer<typeof aiTriageProbeResponseSchema>> {
@@ -462,6 +481,17 @@ export function aiTriageProbe(
     parse: (data) => aiTriageProbeResponseSchema.safeParse(data),
   }) as Promise<z.infer<typeof aiTriageProbeResponseSchema>>;
 }
+
+/**
+ * The Phase 3 name, kept as an alias.
+ *
+ * Two names for one endpoint is normally a smell, and docs/30.4 §3.1 made the
+ * same argument about `/api/auth/me`. The difference: that alias existed to
+ * document a second documented path, whereas this one exists only so an existing
+ * Phase 3 test and any code written against the probe keeps compiling. If you
+ * are writing new code, call `aiTriage`.
+ */
+export const aiTriageProbe = aiTriage;
 
 /**
  * `GET /api/admin/system/health` — operator configuration view. ADMIN ONLY.

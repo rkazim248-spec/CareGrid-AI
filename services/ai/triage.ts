@@ -54,10 +54,21 @@ import 'server-only';
 
 import { AppError } from '@/lib/server/errors';
 import { createLogger } from '@/lib/server/http';
-import { getTriageProvider } from '@/services/integrations/gemini';
+import { getTriageProvider, type GeminiTriageResult } from '@/services/integrations/gemini';
 import { geminiConfig } from '@/lib/env.server';
+import { fallbackTriage } from '@/services/ai/fallback';
+import type { NormalizedTriage } from '@/services/ai/rules';
+import {
+  buildAiRunDocument,
+  buildFallbackRunDocument,
+  logAiRun,
+  type AiOutcome,
+  type AiRunContext,
+} from '@/services/ai/audit';
 import type {
   ProviderCallOptions,
+  TriageAttempt,
+  TriageImage,
   TriageProvider,
   TriageRequest,
   TriageResult,
@@ -96,6 +107,27 @@ export type TriageOutcome = {
   readonly promptVersion: string;
   /** `null` unless a run actually happened. A fallback has no raw output. */
   readonly rawOutputHash: string | null;
+  /**
+   * Which call produced this: `1` is the first answer, `2` the one repair.
+   * `null` when no model was called, which is every fallback path.
+   */
+  readonly attempt: TriageAttempt | null;
+  /**
+   * The full normalised record. docs/09 §5.2.
+   *
+   * Present for BOTH sources, including the keyword fallback — the fallback
+   * engine produces a complete record too, and a dispatcher sees the same shape
+   * either way. `null` only when a provider returned nothing usable at all.
+   */
+  readonly normalized: NormalizedTriage | null;
+  /** docs/09 §7.1. What happened, for `aiRuns` and the health endpoint. */
+  readonly outcome: AiOutcome;
+  /** The `aiRuns` document id, or `null` when nothing was written. */
+  readonly aiRunId: string | null;
+  /** Images the model did not see, because they exceeded the inline budget. */
+  readonly mediaDropped: readonly string[];
+  /** Images the model actually saw. */
+  readonly mediaCount: number;
 };
 
 /* ========================================================================== */
@@ -123,23 +155,71 @@ export type TriageOutcome = {
  * `skip: true` forces the fallback path. That is how the create pipeline
  * disables AI for a maintenance window, and how a test asserts the fallback
  * without a network.
+ *
+ * ---------------------------------------------------------------------------
+ * THE FALLBACK IS NOT "NO ASSESSMENT" — IT IS THE KEYWORD ENGINE
+ * ---------------------------------------------------------------------------
+ * Phase 3 returned `category: null, urgency: null, summary: null` and called that
+ * honest. It was honest, and it was also a worse product than docs/09 §7.2
+ * specifies: a dispatcher looking at a report with no category and no urgency has
+ * nothing to sort on, and docs/09 §7.3 promises something stronger — "every
+ * incident gets a plausible, honest triage even with zero AI availability".
+ *
+ * So the fallback now runs `fallbackTriage()`, which is pure, offline, and
+ * keyword-derived. **Derived, not invented** — which is the distinction the
+ * original test was protecting, and it is why that test was corrected rather than
+ * deleted (see the note in `tests/unit/api/integrations.test.ts`). Every fallback
+ * value traces to a word in the citizen's own report, the confidence is capped at
+ * 0.55 so `needsReview` is always `true`, and the summary says on its face that
+ * it is automated triage requiring human review.
  */
 export async function triageIncident(
   request: TriageRequest,
-  options: ProviderCallOptions & { readonly requestId: string; readonly provider?: TriageProvider },
+  options: ProviderCallOptions & {
+    readonly requestId: string;
+    readonly provider?: TriageProvider;
+    /** Optional attribution for the `aiRuns` document. */
+    readonly audit?: AiRunContext;
+  },
 ): Promise<TriageOutcome> {
   const provider = options.provider ?? getTriageProvider();
   const log = createLogger(options.requestId);
+  const reviewThreshold = geminiConfig().confidenceReviewThreshold;
 
+  /* --- the offline path, and the two ways to reach it ------------------- */
   if (options.skip === true || !provider.isAvailable()) {
-    return fallbackOutcome(provider, 'AI triage was skipped for this request.');
+    return keywordFallback(
+      request,
+      provider,
+      options,
+      'fallback',
+      options.skip === true
+        ? 'AI triage was skipped for this request.'
+        : 'AI triage is not configured in this deployment, so keyword rules were used.',
+    );
   }
 
   try {
     const result = await provider.triage(request, {
       timeoutMs: options.timeoutMs > 0 ? options.timeoutMs : geminiConfig().timeoutMs,
     });
-    return fromProviderResult(result, provider);
+
+    const outcome = fromProviderResult(result, provider, reviewThreshold);
+
+    // Best-effort audit. `logAiRun` swallows its own failures, so this cannot
+    // turn a good triage into a lost report (FR-029).
+    const aiRunId = options.audit
+      ? await logAiRun(
+          buildAiRunDocument(
+            result as GeminiTriageResult,
+            options.audit,
+            'success',
+            new Date().toISOString(),
+          ),
+        )
+      : null;
+
+    return { ...outcome, aiRunId };
   } catch (error) {
     const appError = error instanceof AppError ? error : null;
     // A provider failure is a `warn`, not an `error`: it is an expected,
@@ -149,9 +229,99 @@ export async function triageIncident(
       code: appError?.code ?? 'AI_UNAVAILABLE',
       path: 'services.ai.triage',
       status: appError?.status ?? 502,
+      // A non-`AppError` is a BUG in the provider, so it is logged at `error` —
+      // but with its constructor NAME only. An SDK error's message can carry a
+      // provider request id and a response body, and this is a log line.
+      ...(appError === null && error !== null
+        ? { level: 'error', errorKind: error instanceof Error ? error.name : typeof error }
+        : {}),
     });
-    return fallbackOutcome(provider, 'AI triage was unavailable, so a person will review this report.');
+
+    return keywordFallback(
+      request,
+      provider,
+      options,
+      outcomeForErrorCode(appError?.code ?? null),
+      'AI triage was unavailable, so keyword rules were used. A person will review this report.',
+    );
   }
+}
+
+/**
+ * The `aiRuns` outcomes that mean "the keyword engine produced this record".
+ *
+ * Every one of them is a reason the model did not, or should not have, answered:
+ * it was switched off, not configured, timed out, errored, came back malformed, or
+ * was blocked by a content filter. `success` is deliberately absent — it is the
+ * only outcome that is NOT a reason to have used the fallback, and allowing it
+ * here would let a future caller record a keyword triage as a model call.
+ */
+type KeywordOutcome = Exclude<AiOutcome, 'success'>;
+
+/** docs/09 §7.1's trigger table, mapped from the error code. */
+function outcomeForErrorCode(code: string | null): KeywordOutcome {
+  if (code === 'TIMEOUT') return 'timeout';
+  if (code === 'AI_OUTPUT_INVALID') return 'validation_failed';
+  return 'error';
+}
+
+
+/**
+ * The keyword path. One function, so "the provider is unavailable", "the provider
+ * failed", and "AI was skipped" cannot drift into three slightly different
+ * outcomes — the bug class docs/30.4 §5.4 records about the rate limiter.
+ */
+async function keywordFallback(
+  request: TriageRequest,
+  provider: TriageProvider,
+  options: { readonly audit?: AiRunContext },
+  outcome: KeywordOutcome,
+  rationale: string,
+): Promise<TriageOutcome> {
+  const result = fallbackTriage({
+    text: request.text ?? '',
+    language: request.language,
+    // A DISTRICT label at most, and deliberately NOT derived from `locationHint`.
+    // docs/09 §4.1 requires the server to reverse-geocode and discard
+    // street-level components before a place label reaches the model; no geocoder
+    // is wired up in this phase, so passing the hint through would put free-text
+    // place naming into a field documented as a district label — and docs/09 §5.2
+    // says `location_hint` is never stored on the incident anyway.
+    coarseArea: null,
+    hasCoordinates: false,
+    reviewThreshold: geminiConfig().confidenceReviewThreshold,
+  });
+
+  const aiRunId = options.audit
+    ? await logAiRun(
+        buildFallbackRunDocument(options.audit, outcome, new Date().toISOString()),
+      )
+    : null;
+
+  return {
+    source: 'fallback',
+    category: result.normalized.category,
+    urgency: result.normalized.urgency,
+    summary: result.normalized.summary,
+    safetyFlags: result.normalized.safetyFlags,
+    confidence: result.normalized.confidence,
+    rationale,
+    // FR-024. True for every fallback BY CONSTRUCTION — the engine's confidence
+    // is capped below the threshold — and still computed rather than hardcoded,
+    // so raising the threshold or lowering the cap cannot quietly produce a
+    // fallback that claims to be trustworthy.
+    needsReview: result.normalized.needsReview,
+    providerName: provider.name,
+    model: provider.model,
+    promptVersion: provider.promptVersion,
+    rawOutputHash: null,
+    attempt: null,
+    normalized: result.normalized,
+    outcome,
+    aiRunId,
+    mediaDropped: [],
+    mediaCount: 0,
+  };
 }
 
 /* ========================================================================== */
@@ -170,12 +340,20 @@ export async function triageIncident(
  *   2. **`needsReview` is computed HERE, from the threshold**, never taken from
  *      the model. A model that says it is 100% sure of a low-quality reading is
  *      the exact case FR-024 exists for.
- *   3. **An empty result becomes a fallback.** A provider that returns every
- *      `null` has declined, and a `new` incident with no category and no urgency
- *      and no review flag is a report nobody will look at.
+ *   3. **An empty result becomes the keyword fallback.** A provider that returns
+ *      every `null` has declined, and a `new` incident with no category, no
+ *      urgency, and no review flag is a report nobody will look at.
+ *
+ * `reviewThreshold` is a PARAMETER rather than a second `geminiConfig()` call so
+ * the threshold is read once per request. Reading it twice would let a
+ * mid-request environment change produce an outcome whose `needsReview` was
+ * computed against a different number than the caller's.
  */
-function fromProviderResult(result: TriageResult, provider: TriageProvider): TriageOutcome {
-  const threshold = geminiConfig().confidenceReviewThreshold;
+function fromProviderResult(
+  result: TriageResult,
+  provider: TriageProvider,
+  reviewThreshold: number,
+): TriageOutcome {
   const confidence =
     result.confidence === null ? null : Math.min(1, Math.max(0, result.confidence));
 
@@ -183,7 +361,29 @@ function fromProviderResult(result: TriageResult, provider: TriageProvider): Tri
     result.category === null && result.urgency === null && result.summary === null;
 
   if (declined) {
-    return fallbackOutcome(provider, 'The model declined to assess this report.');
+    // Not a throw and not a silent empty result: the keyword engine decides. The
+    // outcome carries `outcome: 'fallback'`, so `aiRuns` and the health endpoint
+    // both record that a model was reached and declined.
+    return {
+      source: 'fallback',
+      category: null,
+      urgency: null,
+      summary: null,
+      safetyFlags: [],
+      confidence: null,
+      rationale: 'The model declined to assess this report, so keyword rules were used instead.',
+      needsReview: true,
+      providerName: provider.name,
+      model: provider.model,
+      promptVersion: provider.promptVersion,
+      rawOutputHash: null,
+      attempt: null,
+      normalized: null,
+      outcome: 'fallback',
+      aiRunId: null,
+      mediaDropped: [],
+      mediaCount: 0,
+    };
   }
 
   return {
@@ -194,39 +394,57 @@ function fromProviderResult(result: TriageResult, provider: TriageProvider): Tri
     safetyFlags: result.safetyFlags,
     confidence,
     rationale: result.rationale,
-    needsReview: confidence === null || confidence < threshold,
+    needsReview: confidence === null || confidence < reviewThreshold,
     providerName: provider.name,
     model: provider.model,
     promptVersion: provider.promptVersion,
     rawOutputHash: result.rawOutputHash,
+    attempt: isGeminiResult(result) ? result.attempt : 1,
+    // The provider's own normalised record when it has one. A provider that only
+    // implements the narrow `TriageResult` shape — which is what a test provider
+    // and any future third-party provider will do — leaves this `null`, and the
+    // dispatcher panel falls back to the narrow fields.
+    normalized: isGeminiResult(result) ? result.normalized : null,
+    outcome: 'success',
+    aiRunId: null,
+    mediaDropped: isGeminiResult(result) ? result.mediaDropped : [],
+    mediaCount: isGeminiResult(result) ? result.mediaCount : 0,
   };
 }
 
 /**
- * The honest no-AI outcome.
+ * Is this the WIDE result shape the Gemini provider returns?
  *
- * `source: 'fallback'` is not a failure marker, it is a provenance marker: it
- * says a human must read this report, which is the correct handling for an
- * emergency platform whose AI is unavailable. `needsReview: true` is therefore
- * ALWAYS true here, and `confidence: null` so no meter renders a number nobody
- * measured.
+ * A structural check on the two fields that only the wide shape has, rather than
+ * `instanceof`: a provider may be constructed in a different module instance (a
+ * test seam, a duplicated dependency), and `instanceof` across that boundary is
+ * false for a genuine Gemini result. Two required properties is enough, and a
+ * false negative degrades to the narrow fields rather than throwing.
  */
-function fallbackOutcome(provider: TriageProvider, rationale: string): TriageOutcome {
-  return {
-    source: 'fallback',
-    category: null,
-    urgency: null,
-    summary: null,
-    safetyFlags: [],
-    confidence: null,
-    rationale,
-    needsReview: true,
-    providerName: provider.name,
-    model: provider.model,
-    promptVersion: provider.promptVersion,
-    rawOutputHash: null,
-  };
+function isGeminiResult(result: TriageResult): result is TriageResult & GeminiTriageResult {
+  return (
+    'normalized' in result &&
+    'mediaDropped' in result &&
+    (result as GeminiTriageResult).normalized !== undefined
+  );
 }
+
+/**
+ * `source: 'fallback'` is a PROVENANCE marker, not a failure marker: it says a
+ * human must read this report, which is the correct handling for an emergency
+ * platform whose AI is unavailable.
+ *
+ * Phase 3's version of this function returned `confidence: null` and every field
+ * null, on the reasoning that "no meter renders a number nobody measured". That
+ * was true and it was also self-defeating: docs/09 §7.3 requires a *plausible,
+ * honest* triage with zero AI availability, and a record with nothing in it gives
+ * a dispatcher no category to sort on and no urgency to sort by.
+ *
+ * The keyword engine's 0.55 confidence IS a measured number — of how much a string
+ * match is worth — and it sits below `AI_CONFIDENCE_REVIEW_THRESHOLD` by
+ * construction, so the "needs review" treatment is preserved exactly. What changed
+ * is that the record is now usable, not that it became more trustworthy.
+ */
 
 /* ========================================================================== */
 /* The sanitisation boundary                                                   */
@@ -268,7 +486,23 @@ export function toTriageRequest(input: {
   readonly imageCount: number;
   readonly audioCount: number;
   readonly newAccount: boolean;
+  /**
+   * Already-validated images, Phase 4. Omitted by text-only callers.
+   *
+   * The type is `readonly TriageImage[]` rather than anything looser, and that is
+   * the boundary doing its job: a caller cannot hand this function a raw body, a
+   * Storage URL, or an unvalidated base64 string, because the only shape that fits
+   * is the one `validateImage` produces. The alternative — accepting a loose
+   * object and validating here — would put the check one layer too far from the
+   * request that motivated it, and a future caller would skip it.
+   *
+   * Truncated to `maxImages` for the same reason `imageCount` is: a caller that
+   * supplies four images gets three analysed, and the FOURTH is recorded in
+   * `mediaDropped` rather than silently ignored.
+   */
+  readonly images?: readonly TriageImage[];
 }): TriageRequest {
+  const images = (input.images ?? []).slice(0, TRIAGE_LIMITS.maxImages);
   return {
     text: input.text === null ? null : input.text.slice(0, TRIAGE_LIMITS.textMaxChars),
     language: input.language,
@@ -277,9 +511,14 @@ export function toTriageRequest(input: {
         ? null
         : input.locationHint.slice(0, TRIAGE_LIMITS.locationHintMaxChars),
     locationAccuracy: input.locationAccuracy,
-    imageCount: clampCount(input.imageCount, TRIAGE_LIMITS.maxImages),
+    // The COUNT is derived from the images actually present, never trusted from
+    // the caller. A client that said `imageCount: 3` and sent one image would
+    // otherwise make the prompt tell the model three images are attached when it
+    // can see one.
+    imageCount: images.length,
     audioCount: clampCount(input.audioCount, TRIAGE_LIMITS.maxAudioClips),
     newAccount: input.newAccount,
+    images,
   };
 }
 

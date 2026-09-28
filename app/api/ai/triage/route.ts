@@ -59,9 +59,10 @@
 import { withRequest } from '@/lib/server/route';
 import { requireCapability } from '@/lib/server/permissions';
 import { AppError } from '@/lib/server/errors';
-import { aiTriageProbeBodySchema, aiTriageProbeResponseSchema } from '@/validators/ai';
+import { aiTriageProbeBodySchema, aiTriageProbeResponseSchema, type TriagedImage } from '@/validators/ai';
 import { toTriageRequest, triageIncident } from '@/services';
 import { getTriageProvider } from '@/services/integrations/gemini';
+import { validateImage } from '@/services/ai/media';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -82,6 +83,28 @@ export const POST = withRequest(
     // Gate: matrix row 13. Throws 403 for a citizen.
     requireCapability(user, 'r13_readAiTriagePanel', { requestId: ctx.requestId });
 
+    // -------------------------------------------------------------------------
+    // PHASE 4: THE IMAGES ARE VALIDATED BEFORE ANYTHING ELSE
+    // -------------------------------------------------------------------------
+    // Signature first, always. The declared MIME type and the filename are
+    // CLAIMS from the client; the byte signature is a FACT. Validating them in
+    // this order means a 40 MB ZIP named `.jpg` is rejected as the wrong FORMAT
+    // rather than as too large — so the error names the problem the user can
+    // actually fix, and nothing reaches the provider that is not a real image.
+    //
+    // This is the ONLY place uploaded bytes are turned into something the AI can
+    // see, and it happens BEFORE the sanitisation boundary and before the rate
+    // limit is charged for a model call. brief §11, docs/15.
+    const images: TriagedImage[] = [];
+    for (const supplied of body.images) {
+      const validated = validateImage({
+        data: supplied.data,
+        declaredMimeType: supplied.mimeType ?? null,
+        fileName: supplied.fileName ?? null,
+      });
+      images.push(validated);
+    }
+
     // The sanitisation boundary is applied HERE, at the call site, rather than
     // inside the provider. A provider that received a raw body would be one
     // refactor away from receiving a Firestore document (docs/09 §4).
@@ -93,14 +116,35 @@ export const POST = withRequest(
       // the model is told so. MUST NOT 7: a location is never described without
       // its grade.
       locationAccuracy: 'unknown',
-      imageCount: body.imageCount,
+      // The COUNT is what the client claimed; the BYTES are what was actually
+      // validated. Sending the claimed count alongside real images would let a
+      // client say "3 images" while one was rejected — and the prompt would then
+      // tell the model three images are attached when it can see none.
+      imageCount: images.length,
       audioCount: body.audioCount,
       // Derived from the account, never from the body: a client that could
       // declare itself "new" would defeat the S9 advisory signal (FR-135).
       newAccount: user.authTimeSec > 0 && Date.now() / 1000 - user.authTimeSec < 300,
+      images,
     });
 
-    const outcome = await triageIncident(request, { requestId: ctx.requestId, timeoutMs: 0 });
+    const outcome = await triageIncident(request, {
+      requestId: ctx.requestId,
+      timeoutMs: 0,
+      audit: {
+        incidentId: null,
+        uid: user.uid,
+        requestId: ctx.requestId,
+        language: body.language,
+        // `null`, never the free-text `locationHint`. docs/09 §4.1 requires a
+        // reverse-geocoded DISTRICT label, and no geocoder is wired up in this
+        // phase — a reporter's own words are not a district.
+        coarseArea: null,
+        hasCoordinates: false,
+      },
+    });
+
+    const provider = getTriageProvider();
 
     return {
       data: aiTriageProbeResponseSchema.parse({
@@ -116,8 +160,15 @@ export const POST = withRequest(
           providerName: outcome.providerName,
           model: outcome.model,
           promptVersion: outcome.promptVersion,
+          outcome: outcome.outcome,
+          attempt: outcome.attempt,
+          lowConfidence: outcome.confidence === null || outcome.needsReview,
         },
-        providerAvailable: getTriageProvider().isAvailable(),
+        providerAvailable: provider.isAvailable(),
+        simulated: outcome.providerName === 'gemini-mock',
+        mediaCount: outcome.mediaCount,
+        mediaDropped: [...outcome.mediaDropped],
+        aiRunId: outcome.aiRunId,
       }),
     };
   },

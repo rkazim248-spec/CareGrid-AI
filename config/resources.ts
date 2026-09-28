@@ -98,6 +98,24 @@ export const RESOURCE_CATALOGUE: readonly ResourceItem[] = [
 
 const BY_ID = new Map(RESOURCE_CATALOGUE.map((r) => [r.resourceId, r]));
 
+/**
+ * The 12 ids, as a tuple, DERIVED from the catalogue above.
+ *
+ * Added for Phase 4. `services/ai/schema.ts` needs the ids as a closed set so
+ * the AI output schema can constrain `required_resources[].resourceId` to a
+ * real catalogue entry, and a hand-copied list of 12 strings is exactly the kind
+ * of duplication that lets a resource be requested that cannot be dispatched.
+ *
+ * Derived rather than written, so adding a 13th resource to the catalogue
+ * widens the enum automatically. `tests/unit/config-invariants.test.ts` asserts
+ * the length and the uniqueness, because a derived list is only trustworthy if
+ * something checks that the derivation did what it was supposed to.
+ */
+export const RESOURCE_IDS = RESOURCE_CATALOGUE.map((r) => r.resourceId).sort() as [
+  (typeof RESOURCE_CATALOGUE)[number]['resourceId'],
+  ...(typeof RESOURCE_CATALOGUE)[number]['resourceId'][],
+];
+
 /** Never return undefined to a component — fall back to the raw id. */
 export function resourceName(resourceId: string): string {
   return BY_ID.get(resourceId)?.name ?? resourceId;
