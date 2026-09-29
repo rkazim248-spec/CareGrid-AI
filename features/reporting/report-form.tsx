@@ -17,7 +17,8 @@ import {
 import { REPORT_LIMITS } from '@/config';
 import { REPORT_COPY } from '@/features/reporting/report-copy';
 import { CategorySelector } from '@/features/reporting/category-selector';
-import { EvidenceSlots } from '@/features/reporting/evidence-slot';
+import { EvidenceUploader } from '@/features/reporting/evidence-uploader';
+import { startUpload, subscribeUploads, uploadSnapshot } from '@/features/reporting/upload-manager';
 import { LocationPanel } from '@/features/reporting/location-panel';
 import { ReviewPanel } from '@/features/reporting/review-panel';
 import { VoiceRecorder } from '@/features/reporting/voice-recorder';
@@ -25,6 +26,7 @@ import { AiTriagePanel, type EditableTriage } from '@/features/reporting/ai-tria
 import { AI_TRIAGE_COPY } from '@/features/reporting/ai-triage-copy';
 import { mapTriageResponse } from '@/features/reporting/map-triage-response';
 import type { AiTriageResponse, AiTriageStep } from '@/features/reporting/ai-triage-types';
+import type { PendingUpload, VoiceRecording } from '@/types/media';
 import { aiTriage } from '@/lib/api/client';
 import { isApiError } from '@/lib/api/errors';
 import {
@@ -70,7 +72,6 @@ export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
   const [draft, setDraft] = React.useState<ReportDraft>(EMPTY_DRAFT);
   const [submitting, setSubmitting] = React.useState(false);
   const reasonRef = React.useRef<HTMLParagraphElement | null>(null);
-  const counter = React.useRef(0);
   const reasonId = 'report-submit-reason';
   // A separate id, because two controls each need their own explanation and one
   // ria-describedby cannot point at two paragraphs.
@@ -153,32 +154,91 @@ export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
     setDraft((current) => ({ ...current, text }));
   }, []);
 
-  const addEvidence = React.useCallback(() => {
-    counter.current += 1;
-    const item: EvidenceItem = {
-      id: `evidence-${counter.current}`,
-      name: `photo-${counter.current}.jpg`,
-      progress: 0,
-    };
-    setDraft((current) =>
-      current.evidence.length >= REPORT_LIMITS.maxImages
-        ? current
-        : { ...current, evidence: [...current.evidence, item] },
-    );
+  /**
+   * A finished voice clip goes through the SAME upload pipeline as a photo.
+   *
+   * Not a special case, and deliberately so. brief §21 forbids a second Gemini
+   * path and the same reasoning applies to Storage: an audio item is a file, it
+   * has the same claim/sniff/finalize chain, and giving it its own code path is
+   * how one of the two ends up without a size check or a signature check.
+   *
+   * The `Blob` is wrapped in a `File` because `startUpload` takes a `File`. That
+   * is the only difference, and it is a typing convenience rather than a
+   * behaviour change: a `Blob` already carries a `type`, and the wrapper is given
+   * the recorder's own type rather than a guess.
+   *
+   * The name is server-shaped. `displayName` is a DISPLAY hint that the server
+   * sanitises, never a path — docs/15 §3.5.
+   */
+  const addVoiceNote = React.useCallback((recording: VoiceRecording) => {
+    const file = new File([recording.blob], recording.displayName, {
+      type: recording.mimeType,
+      lastModified: Date.now(),
+    });
+    void startUpload({
+      file,
+      kind: 'audio',
+      durationSec: recording.durationSec,
+      displayName: recording.displayName,
+    });
   }, []);
+  /**
+   * Is a voice note on its way up?
+   *
+   * Read from the upload store with `useSyncExternalStore` rather than tracked in
+   * a `useState` alongside it. A second copy of the same fact is a second thing to
+   * forget to update: the recorder would say "added" while the uploader showed a
+   * failure. This binds to the store, which is already the single source.
+   *
+   * `useSyncExternalStore` rather than `useState` + `subscribe` in an effect
+   * because it cannot render a stale value on the first pass — the store already
+   * exists before this component mounts, so the initial read is the truth rather
+   * than an empty array that flashes and corrects.
+   */
+  const voiceUploaded = React.useSyncExternalStore(
+    subscribeUploads,
+    () => uploadSnapshot().some((item) => item.kind === 'audio' && item.status === 'uploaded'),
+    // The server snapshot. `uploadSnapshot` reads a module-level `Map`, which is
+    // empty on the server, so this is a correct and stable answer rather than a
+    // stub — and it prevents the hydration mismatch React would otherwise resolve
+    // by discarding the tree.
+    () => false,
+  );
 
-  const removeEvidence = React.useCallback((id: string) => {
-    setDraft((current) => ({
-      ...current,
-      evidence: current.evidence.filter((item) => item.id !== id),
-    }));
-  }, []);
-
-  const setProgress = React.useCallback((id: string, progress: number) => {
-    setDraft((current) => ({
-      ...current,
-      evidence: current.evidence.map((item) => (item.id === id ? { ...item, progress } : item)),
-    }));
+  /**
+   * The real uploader's output, folded back into the draft.
+   *
+   * This is not a duplicate of the upload store — it is the one place the form's
+   * own state learns what has been uploaded, and it exists because
+   * `canSubmit` treats a non-empty `evidence` as a submittable report. Without it,
+   * a citizen with a photo of a fire and no text could not submit at all, which
+   * is the image-only path docs/15 §16.3 explicitly has to keep working.
+   *
+   * Only `status === 'uploaded'` items are recorded. A failed or in-flight upload
+   * is not evidence, and counting it would let a citizen submit a report whose
+   * photo never arrived — a report that looks complete and has no photo.
+   */
+  const syncEvidence = React.useCallback((uploaded: readonly PendingUpload[]) => {
+    setDraft((current) => {
+      const next: EvidenceItem[] = uploaded.map((item) => ({
+        id: item.localId,
+        name: item.fileName,
+        // Not the live progress. This is a snapshot for a view that no longer
+        // animates; the real bar is in `EvidenceUploader`, and two live progress
+        // values for one file is one too many.
+        progress: item.progress / 100,
+        ...(item.mediaId === undefined ? {} : { mediaId: item.mediaId }),
+        ...(item.verifiedContentType === undefined ? {} : { mimeType: item.verifiedContentType }),
+      }));
+      // Identity check, so a re-render with an unchanged list does not produce a
+      // new array. A fresh `evidence` array on every store emission would make
+      // `draft` a new object every time and re-render the whole form on every
+      // progress tick.
+      const unchanged =
+        current.evidence.length === next.length &&
+        current.evidence.every((item, index) => item.mediaId === next[index]?.mediaId);
+      return unchanged ? current : { ...current, evidence: next };
+    });
   }, []);
 
   const setLocation = React.useCallback((location: ReportLocation, method: LocationMethod) => {
@@ -243,12 +303,13 @@ export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
               <p className="text-sm text-secondary">{REPORT_COPY.photosLead}</p>
             </CardHeader>
             <CardContent>
-              <EvidenceSlots
-                items={draft.evidence}
-                onAdd={addEvidence}
-                onRemove={removeEvidence}
-                onProgress={setProgress}
-              />
+              {/* Phase 5. This replaces the Phase 1 `EvidenceSlots`, which drew a
+                  progress bar no bytes were behind. brief §24 forbids a faked
+                  bar, so the real uploader takes its place. The `EvidenceItem`
+                  draft field and its simulated add/remove/progress handlers are
+                  still in the tree because `report-view.tsx` and the Phase 1
+                  tests read them; removing that is Phase 6 tidy-up. */}
+              <EvidenceUploader onChange={syncEvidence} disabled={submitting} />
             </CardContent>
           </Card>
 
@@ -260,7 +321,11 @@ export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
               <p className="text-sm text-secondary">{REPORT_COPY.voiceLead}</p>
             </CardHeader>
             <CardContent>
-              <VoiceRecorder />
+              <VoiceRecorder
+                onRecorded={addVoiceNote}
+                hasRecording={voiceUploaded}
+                disabled={submitting}
+              />
             </CardContent>
           </Card>
 

@@ -12,8 +12,33 @@ import type { AccuracyGrade, IncidentCategory, LocationSource } from '@/types';
 export type EvidenceItem = {
   readonly id: string;
   readonly name: string;
-  /** 0 to 1. Simulated; nothing is uploaded in Phase 1. */
+  /**
+   * 0 to 1.
+   *
+   * **Simulated in Phase 1 and real from Phase 5.** Kept because `report-view.tsx`
+   * renders it, and because removing a field other files read is a wider change
+   * than this phase needs. Nothing in Phase 5 writes it: the real progress lives
+   * in `PendingUpload.progress` (an integer percentage) and is rendered by
+   * `EvidenceUploader`. This field is display-only now.
+   */
   readonly progress: number;
+  /**
+   * The server-issued `med_XXXXXXXXXXXX`, present only for an item that finished
+   * `POST /api/uploads/finalize`.
+   *
+   * **Optional, and that is the honest shape.** Phase 1 created items with no
+   * upload behind them, and `report-view.tsx` still can. But it is load-bearing
+   * for a different reason: `canSubmit` below treats a non-empty `evidence` as a
+   * submittable report, which is the image-only path docs/15 §16.3 requires. So
+   * this array is not decoration — it is what lets a citizen with a photo of a
+   * fire and no text send their report at all. Phase 5's uploader reports into it
+   * for exactly that reason.
+   */
+  readonly mediaId?: string;
+  /**
+   * The SNIFFED type, once verified. Never the declared one — docs/15 §5.3.
+   */
+  readonly mimeType?: string;
 };
 
 export type ReportLocation = {

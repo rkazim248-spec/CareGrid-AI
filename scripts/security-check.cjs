@@ -914,6 +914,314 @@ for (const line of envExample.split('\n')) {
 }
 check('ALLOW_SEED is false in .env.example', seedHits.length === 0, seedHits.join('; '));
 
+/* ========================================================================== */
+/* Phase 5 — evidence uploads (docs/15)                                        */
+/* ========================================================================== */
+
+/**
+ * These are the checks that must NOT be satisfiable by a comment, a type alias or
+ * a well-intentioned constant. Each one below is written to fail on the specific
+ * mutation it is guarding, and each was verified to fail by actually making that
+ * mutation.
+ */
+
+/**
+ * 1. The path regexes must CAPTURE what `validateMediaPath` destructures.
+ *
+ * This check exists because of a bug this phase shipped with.
+ *
+ * `STAGING_PATH_RE` was written as `^staging/[A-Za-z0-9_-]{1,128}/med_[A-Z2-7]{12}\.(ext)$`
+ * — a correct regex with NO capture groups. `validateMediaPath` destructures
+ * `exec()`'s groups, so `uid` was `undefined`, `undefined !== callerUid` was
+ * always true, and the function returned `null` for every possible input. Every
+ * upload would have been silently dropped while the regex "passed" every test that
+ * only called `.test()`.
+ *
+ * So the check counts capture groups, not matches. A `.test()`-based check would
+ * have passed throughout.
+ */
+const captureGroupCount = (source) => (source.match(/\((?!\?)/g) ?? []).length;
+
+/**
+ * Pull the template literal out of `export const NAME = new RegExp(` … `)`.
+ *
+ * Written as index scanning rather than a regex because the thing being searched
+ * for contains a BACKTICK, and a backtick inside a regex built from a template
+ * literal needs escaping that is easy to get wrong in a way that fails at PARSE
+ * time rather than at match time. Index arithmetic has no such hazard.
+ */
+function regexTemplateLiteral(source, name) {
+  const marker = `export const ${name} = new RegExp(`;
+  const start = source.indexOf(marker);
+  if (start === -1) return null;
+  const open = source.indexOf('`', start + marker.length);
+  if (open === -1) return null;
+  const close = source.indexOf('`', open + 1);
+  if (close === -1) return null;
+  return source.slice(open + 1, close);
+}
+
+const pathRegexShapes = {
+  STAGING_PATH_RE: 3,
+  FINAL_PATH_RE: 5,
+  QUARANTINE_PATH_RE: 2,
+};
+const uploadValidator = code('validators/upload.ts');
+const captureFailures = [];
+for (const [name, expected] of Object.entries(pathRegexShapes)) {
+  const template = regexTemplateLiteral(uploadValidator, name);
+  if (template === null) {
+    captureFailures.push(`${name} not found as a template-literal RegExp`);
+    continue;
+  }
+  const actual = captureGroupCount(template);
+  if (actual !== expected) {
+    captureFailures.push(
+      `${name} declares ${actual} capture group(s), validateMediaPath destructures ${expected}`,
+    );
+  }
+}
+check(
+  'Every media path regex captures the segments its parser reads',
+  captureFailures.length === 0,
+  captureFailures.join('; '),
+);
+
+/**
+ * 2. The three path shapes must not be widened by a looser character class.
+ *
+ * `docs/15 §3.4` specifies these character classes exactly. A `.` or `..` added to
+ * the uid class, or a `*` added to a quantifier, opens a traversal or an unbounded
+ * id. The check asserts the literal class text is present, which is brittle on
+ * purpose: a deliberate change to the path contract should have to update this
+ * check, because that is a contract change and not a refactor.
+ */
+const pathClassInvariants = [
+  ['staging uid class', 'staging/([A-Za-z0-9_-]{1,128})/'],
+  ['media id class', '(med_[A-Z2-7]{12})'],
+  ['incident id is exactly 20', 'incidents/([A-Za-z0-9]{20})/'],
+];
+const classFailures = pathClassInvariants
+  .filter(([, needle]) => !uploadValidator.includes(needle))
+  .map(([label]) => `${label} no longer matches the docs/15 §3.4 form`);
+check(
+  'Media path character classes are the docs/15 §3.4 ones',
+  classFailures.length === 0,
+  classFailures.join('; '),
+);
+
+/**
+ * 3. `generateMediaId` must loop over `MEDIA_ID_BODY_LENGTH`, not the alphabet length.
+ *
+ * The second bug from this phase: `randomBytes(MEDIA_ID_ALPHABET.length)` with a
+ * loop bound of the same value emits a 32-character body, while `MEDIA_ID_RE`
+ * demands exactly 12. Every id the server minted failed its own regex, so every
+ * signed URL pointed at a path Storage would refuse. The two numbers are 32 and
+ * 12 and nothing about the expression distinguishes them, so this is asserted.
+ */
+const signUploadSource = code('services/uploads/sign-upload.ts');
+const generatorBindsLength =
+  /randomBytes\(MEDIA_ID_BODY_LENGTH\)/.test(signUploadSource) &&
+  /i\s*<\s*MEDIA_ID_BODY_LENGTH/.test(signUploadSource);
+const generatorRejectsAlphabetLength =
+  /randomBytes\(MEDIA_ID_ALPHABET\.length\)/.test(signUploadSource) ||
+  /i\s*<\s*MEDIA_ID_ALPHABET\.length/.test(signUploadSource);
+check(
+  'generateMediaId is bounded by MEDIA_ID_BODY_LENGTH, not the alphabet length',
+  generatorBindsLength && !generatorRejectsAlphabetLength,
+  generatorRejectsAlphabetLength
+    ? 'generateMediaId loops over MEDIA_ID_ALPHABET.length (32) instead of MEDIA_ID_BODY_LENGTH (12)'
+    : !generatorBindsLength
+      ? 'generateMediaId no longer references MEDIA_ID_BODY_LENGTH in both the draw and the loop'
+      : '',
+);
+
+/**
+ * 4. The sniffer must check dangerous signatures BEFORE any media signature.
+ *
+ * `docs/15 §6` and §5.4: a polyglot is defined by its first bytes, so a file whose
+ * header is `PK\x03\x04` is a ZIP no matter what follows. Checking the media
+ * formats first would let a file that someone wrote a JPEG header onto reach the
+ * allow-list. The check reads the source ORDER of the two loops rather than
+ * trusting a comment, and a reordered detector is exactly the mutation that would
+ * otherwise be invisible.
+ */
+const sniffSource = code('services/uploads/sniff.ts');
+const dangerousLoop = sniffSource.indexOf(
+  'for (const [label, signature] of DANGEROUS_SIGNATURES)',
+);
+const firstMediaCall = sniffSource.indexOf('jpegLooksReal(buf)');
+/**
+ * Both indices must be FOUND as well as ordered.
+ *
+ * This check shipped with only the ordering test, and mutation testing caught
+ * why that is not enough: `String.prototype.indexOf` returns `-1` when a
+ * substring is absent, and `-1 < anything` is `true`. Deleting the
+ * dangerous-signature loop entirely therefore SATISFIED the check — the exact
+ * regression it exists to catch. A "is A before B" assertion on two strings has
+ * to assert existence, or it is asserting `-1 < n`, which is a tautology.
+ */
+check(
+  'The sniffer checks executable signatures before any media signature',
+  dangerousLoop !== -1 && firstMediaCall !== -1 && dangerousLoop < firstMediaCall,
+  dangerousLoop === -1
+    ? 'detectMediaType no longer iterates DANGEROUS_SIGNATURES'
+    : firstMediaCall === -1
+      ? 'detectMediaType no longer calls jpegLooksReal'
+      : 'the media checks run before the dangerous-signature loop',
+);
+
+/**
+ * 5. `resolveEvidenceRead` must not distinguish "absent" from "forbidden".
+ *
+ * `docs/15 §16.4` requires the two to be byte-identical. If a future change gives
+ * the permission case a different code or message, that is an existence oracle:
+ * a caller could enumerate `mediaId`s and learn which reports exist. The check
+ * counts the distinct refusal constructions INSIDE that one function — it must be
+ * exactly one, hoisted to a shared `REFUSAL` and re-thrown.
+ *
+ * Scoped to the function, not the file. `readStagedForAi` legitimately raises
+ * `MEDIA_NOT_FOUND` too, and counting it here would make this check fail for an
+ * unrelated reason and train a reader to ignore it. A check that is right by luck
+ * is worse than no check, because the next real regression will be dismissed as
+ * "the check is noisy".
+ */
+const attachSource = code('services/uploads/evidence-attach.ts');
+function functionBody(source, signature) {
+  const start = source.indexOf(signature);
+  if (start === -1) return '';
+  // Walk braces from the signature's own opening brace. A `}` inside a string or
+  // a comment would end this early, so this is a lower bound on the body rather
+  // than an exact slice — which is fine, because an over-long body can only make
+  // the count HIGHER, and the check fails if the count is not exactly 1.
+  const open = source.indexOf('{', start);
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(open, i + 1);
+    }
+  }
+  return source.slice(open);
+}
+const readBody = functionBody(attachSource, 'export async function resolveEvidenceRead');
+const refusalConstructions = (
+  readBody.match(/new AppError\(\{\s*code: 'MEDIA_NOT_FOUND'/g) ?? []
+).length;
+const hasSharedRefusal = /const REFUSAL = new AppError\(/.test(readBody);
+check(
+  'Evidence read has ONE refusal, shared by absent, unverified and forbidden',
+  readBody.length > 0 && hasSharedRefusal && refusalConstructions === 1,
+  readBody.length === 0
+    ? 'resolveEvidenceRead not found'
+    : `found ${refusalConstructions} MEDIA_NOT_FOUND constructions in resolveEvidenceRead; docs/15 §16.4 requires one`,
+);
+
+/**
+ * 6. A `MediaRef` must not carry a persisted `downloadUrl`.
+ *
+ * brief §16's example shape includes an optional `downloadUrl`. It is deliberately
+ * omitted: a Firebase download URL is a long-lived bearer token, and storing one
+ * in a document that anyone who can read the incident can read means the URL
+ * outlives the authorization decision that produced it. `types/media.ts` documents
+ * the reasoning. This check makes removing that decision a deliberate act.
+ */
+const mediaTypes = code('types/media.ts');
+check(
+  'MediaRef stores no downloadUrl (read URLs are minted per request)',
+  !/^\s*readonly downloadUrl[?:]/m.test(mediaTypes),
+  'types/media.ts declares a persisted downloadUrl on MediaRef',
+);
+
+/**
+ * 7. The browser PUT must not send a `Content-Type` the signature does not cover.
+ *
+ * The V4 signature is computed over the content type, so sending `file.type` when
+ * the server signed `signed.requiredContentType` is a 403 from Google with a
+ * message about a signature. The two are usually equal and are not always — a blob
+ * assembled by the recorder echoes whatever the recorder was configured with. The
+ * check insists the signed value is what is sent.
+ */
+const uploadManagerSource = code('features/reporting/upload-manager.ts');
+const sendsSignedContentType = /setRequestHeader\(\s*'Content-Type',\s*contentType\s*\)/.test(
+  uploadManagerSource,
+);
+const signedValueIsSent = /putWithProgress\(\s*signed\.uploadUrl,\s*file,\s*signed\.requiredContentType/.test(
+  uploadManagerSource.replace(/\s+/g, ' '),
+);
+check(
+  'The browser PUT sends the SIGNED content type, not the file own type',
+  sendsSignedContentType && signedValueIsSent,
+  'putWithProgress must send signed.requiredContentType, not file.type',
+);
+
+/**
+ * 8. Upload progress must come from real byte events, never a timer.
+ *
+ * brief §24: "Do not fake progress." A `setInterval` that increments a percentage
+ * is the specific thing that is forbidden, and it is easy to reintroduce because
+ * it looks like a loading state. The check looks for an interval or a synthetic
+ * increment in the uploader, and requires the real `xhr.upload.onprogress` source.
+ *
+ * The recorder component legitimately HAS an interval — it is the elapsed-time
+ * readout, which is real measured time and not a progress claim — so this check is
+ * scoped to the upload path only.
+ */
+const hasRealProgress = /xhr\.upload\.onprogress/.test(uploadManagerSource);
+const hasSyntheticProgress =
+  /setInterval\([\s\S]{0,200}?(progress|percent)/i.test(uploadManagerSource);
+check(
+  'Upload progress comes from xhr.upload.onprogress, not a timer',
+  hasRealProgress && !hasSyntheticProgress,
+  !hasRealProgress
+    ? 'no xhr.upload.onprogress — progress cannot be real'
+    : 'a timer appears to advance the progress value',
+);
+
+/**
+ * 9. The sweeper must not be silently implemented as a no-op.
+ *
+ * `docs/15 §16.2` requires a `sweep-staging-uploads` job that this phase does not
+ * build. The function therefore THROWS rather than returning an empty report —
+ * `{ scanned: 0, deleted: [] }` would tell a caller staging is clean, which is a
+ * false statement. A mutation that returns an empty result is the failure mode
+ * worth catching.
+ */
+const sweepThrows = /sweepAbandonedStaging[\s\S]{0,600}?throw new AppError/.test(attachSource);
+const sweepReturnsEmpty = /sweepAbandonedStaging[\s\S]{0,600}?return\s*\{\s*scanned:\s*0/.test(
+  attachSource,
+);
+check(
+  'The staging sweeper refuses rather than reporting a false clean',
+  sweepThrows && !sweepReturnsEmpty,
+  sweepReturnsEmpty
+    ? 'sweepAbandonedStaging returns an empty report, which claims staging is clean'
+    : !sweepThrows
+      ? 'sweepAbandonedStaging no longer throws'
+      : '',
+);
+
+/**
+ * 10. The transcript copy must not claim a responder was dispatched.
+ *
+ * brief §34 is an emergency-safety requirement, and it is the kind of thing that
+ * gets "improved" by someone adding a reassuring sentence. The check scans
+ * `services/speech/speech-to-text.ts` for the four phrasings brief §34 names.
+ */
+const speechSource = code('services/speech/speech-to-text.ts');
+const dispatchClaims = [
+  /emergency services (have|has) been notified/i,
+  /help is on the way/i,
+  /responders? (have|has) been dispatched/i,
+  /alerted the authorities/i,
+].filter((pattern) => pattern.test(speechSource));
+check(
+  'No speech copy claims a responder is on the way (brief §34)',
+  dispatchClaims.length === 0,
+  dispatchClaims.map(String).join('; '),
+);
+
 /* ------------------------------------------------------------------------ */
 /* Report                                                                     */
 /* ------------------------------------------------------------------------ */

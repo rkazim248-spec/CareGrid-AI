@@ -116,6 +116,38 @@ export const RATE_LIMIT_RULES: Readonly<Record<string, RateLimitRule>> = {
   'auth.me': { routeKey: 'auth.me', limit: 120, windowSec: 60, subject: 'uid' },
   'admin.systemHealth': { routeKey: 'admin.systemHealth', limit: 30, windowSec: 60, subject: 'uid' },
   'ai.triage': { routeKey: 'ai.triage', limit: 20, windowSec: 3600, subject: 'uid' },
+
+  /* --- Phase 5: uploads (docs/15 §8.1) ---------------------------------- */
+  /**
+   * 30/h per uid. A full report needs 3 signs (3 media) and the FR-015 budget is
+   * 5 reports/hour, so 30 is exactly the ceiling with NO retry headroom — which
+   * is deliberate, because a citizen who uploads, fails once on a flaky
+   * connection, and retries has just used 6 of their 30 and can still finish.
+   * Raising this to "sign is cheap, allow lots" is how a public upload endpoint
+   * gets built: brief §32, "Do not create a public unlimited upload endpoint."
+   */
+  'uploads.sign': { routeKey: 'uploads.sign', limit: 30, windowSec: 3600, subject: 'uid' },
+  /**
+   * 30/h, matching `uploads.sign` 1:1.
+   *
+   * The two MUST move together. A sign with no finalize is a claim that is never
+   * spent; a finalize with no sign is rejected by `claimFor` and costs nothing
+   * real. So the pairing is what bounds the number of *live* staging objects a
+   * single user can accumulate, which is the resource `uploads.sign` is really
+   * protecting.
+   */
+  'uploads.finalize': { routeKey: 'uploads.finalize', limit: 30, windowSec: 3600, subject: 'uid' },
+  /**
+   * 120/min, from docs/15 §16.4 verbatim: "the client calls
+   * `GET /api/uploads/:mediaId/url` again (rate limit 120/min)".
+   *
+   * Generous on purpose, and it is a READ. A dispatcher scrolling an incident
+   * with 3 photos on a slow connection re-fetches signed URLs constantly as they
+   * expire, and a tighter limit here would show a responder blank images during
+   * an emergency — the single worst failure this product has. Each call mints a
+   * 15-minute URL, so the cost is a signature, not a download.
+   */
+  'uploads.url': { routeKey: 'uploads.url', limit: 120, windowSec: 60, subject: 'uid' },
 };
 
 /**

@@ -274,7 +274,45 @@ export function isAiMockMode(): boolean {
   return optionalString('GEMINI_API_KEY') === '';
 }
 
-/* --- Google Maps — docs/21 §2, docs/12 ------------------------------------ */
+/* --- Uploads — docs/15 §7, read by services/uploads/* ------------------- */
+
+/**
+ * The upload tunables.
+ *
+ * Every default is the documented value from docs/15 §7.1, so a deployment with
+ * none of them set behaves exactly as the specification describes rather than as
+ * whatever the code happened to default to.
+ *
+ * `maxImageBytes` and `maxAudioBytes` are the two numbers a reader is most likely
+ * to want to argue with, so both carry the reason they are what they are:
+ * 5 MiB is FR-005's per-image cap, and 15 MiB is FR-006's per-clip cap. The
+ * reason the architecture is shaped around them is §7.2: base64 inflates by
+ * 1.37x, so the largest allowed file exceeds Vercel's 4 MiB body limit and the
+ * upload MUST go browser-to-Storage directly. That arithmetic is why this is an
+ * env var at all rather than a constant in a route.
+ */
+export function uploadConfig() {
+  return {
+    maxImageBytes: tunableNumber('UPLOAD_MAX_IMAGE_BYTES', 5_242_880, 1024, 15 * 1024 * 1024),
+    maxAudioBytes: tunableNumber('UPLOAD_MAX_AUDIO_BYTES', 15_728_640, 1024, 20 * 1024 * 1024),
+    /** docs/15 §10.2. The client auto-stops at this; the server refuses above it. */
+    maxAudioDurationSec: tunableNumber('UPLOAD_MAX_AUDIO_SEC', 120, 5, 300),
+    /** docs/15 §7.1. A signed PUT URL's lifetime. */
+    signedUrlTtlSec: tunableNumber('UPLOAD_SIGNED_URL_TTL_SEC', 900, 60, 3600),
+    /** docs/15 §3.3, §16.2. How long an unclaimed staging object survives. */
+    stagingSweepMin: tunableNumber('STAGING_UPLOAD_SWEEP_MIN', 30, 1, 1440),
+    /**
+     * How far into an object the sniffer reads. docs/15 §5.2.4 is explicit that
+     * 4 KiB is NOT enough for `audio/webm`: the `Segment`/`Tracks` elements that
+     * identify the track types routinely sit beyond it, so a legitimate 90-second
+     * voice note would be rejected. 64 KiB is the documented mitigation and the
+     * default here.
+     */
+    sniffBytes: tunableNumber('UPLOAD_SNIFF_BYTES', 65_536, 4096, 1_048_576),
+  } as const;
+}
+
+/* --- Google Maps - docs/21 §2, docs/12 ------------------------------------ */
 
 export const GOOGLE_MAPS_SERVER_VARS = ['GOOGLE_MAPS_SERVER_KEY'] as const;
 

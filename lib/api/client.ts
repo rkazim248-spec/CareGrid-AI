@@ -59,6 +59,12 @@ import {
   type MeResponse,
 } from '@/validators/me';
 import { aiTriageProbeBodySchema, aiTriageProbeResponseSchema } from '@/validators/ai';
+import {
+  MEDIA_ID_RE,
+  finalizeUploadResponseSchema,
+  signUploadBodySchema,
+  signUploadResponseSchema,
+} from '@/validators/upload';
 
 
 /* ========================================================================== */
@@ -492,6 +498,91 @@ export function aiTriage(
  * are writing new code, call `aiTriage`.
  */
 export const aiTriageProbe = aiTriage;
+
+/* ========================================================================== */
+/* Phase 5 — evidence uploads (docs/15 §8.1)                                   */
+/* ========================================================================== */
+
+/** The signed-URL response, parsed rather than cast. */
+const uploadsSignedUrlResponseSchema = z.object({
+  mediaId: z.string(),
+  url: z.string(),
+  expiresAt: z.number(),
+  contentType: z.string(),
+  displayName: z.string(),
+});
+
+/**
+ * `POST /api/uploads/sign` — ask for a destination and a signed PUT URL.
+ *
+ * A thin wrapper on purpose. Everything that can be checked client-side is checked
+ * in the uploader component first, and everything that matters is checked by the
+ * server; duplicating the allow-list here so the pre-check and the route could
+ * disagree is exactly the drift docs/15 §5.1 exists to prevent. The pre-check reads
+ * `getUploadLimits()`, which is the same constant the server reads.
+ */
+export function uploadsSign(
+  input: z.input<typeof signUploadBodySchema>,
+  options: { signal?: AbortSignal } = {},
+): Promise<z.infer<typeof signUploadResponseSchema>> {
+  return apiFetch<unknown>('/api/uploads/sign', {
+    method: 'POST',
+    body: signUploadBodySchema.parse(input),
+    signal: options.signal,
+    parse: (data) => signUploadResponseSchema.safeParse(data),
+  }) as Promise<z.infer<typeof signUploadResponseSchema>>;
+}
+
+/**
+ * `POST /api/uploads/finalize` — "I uploaded it; what is it really?"
+ *
+ * Called once per file, immediately after its PUT completes. The response is what
+ * the UI shows as the verified type, so it is parsed against the schema rather
+ * than cast: a server that changed shape should produce a visible parse failure
+ * here, not an `undefined` that renders as an empty progress bar.
+ */
+export function uploadsFinalize(
+  mediaId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<z.infer<typeof finalizeUploadResponseSchema>> {
+  return apiFetch<unknown>('/api/uploads/finalize', {
+    method: 'POST',
+    body: { mediaId },
+    signal: options.signal,
+    parse: (data) => finalizeUploadResponseSchema.safeParse(data),
+  }) as Promise<z.infer<typeof finalizeUploadResponseSchema>>;
+}
+
+/**
+ * `GET /api/uploads/[mediaId]/url` — a 15-minute signed read URL.
+ *
+ * **Called on demand, never persisted.** `types/media.ts` documents why a
+ * `downloadUrl` is deliberately absent from `MediaRef`: a stored Firebase download
+ * URL is a long-lived bearer token, and storing one in a document that anyone who
+ * can read the incident can read means the URL outlives the authorization
+ * decision that produced it.
+ *
+ * A `404` here is deliberately indistinguishable from a `403` and callers must not
+ * try to tell them apart — the server makes them identical on purpose
+ * (docs/15 §16.4). Render "evidence unavailable" for both.
+ */
+export function uploadsSignedUrl(
+  mediaId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<z.infer<typeof uploadsSignedUrlResponseSchema>> {
+  // The `mediaId` is interpolated into a URL path, so it is validated here rather
+  // than trusted. It is a server-generated `med_[A-Z2-7]{12}` and nothing else;
+  // interpolating an unvalidated id would let a caller aim the request at a
+  // different route entirely — `../admin/system/health` is a valid interpolation.
+  if (!MEDIA_ID_RE.test(mediaId)) {
+    return Promise.reject(new Error('That file reference is not valid.'));
+  }
+  return apiFetch<unknown>(`/api/uploads/${mediaId}/url`, {
+    method: 'GET',
+    signal: options.signal,
+    parse: (data) => uploadsSignedUrlResponseSchema.safeParse(data),
+  }) as Promise<z.infer<typeof uploadsSignedUrlResponseSchema>>;
+}
 
 /**
  * `GET /api/admin/system/health` — operator configuration view. ADMIN ONLY.

@@ -41,6 +41,11 @@ import 'server-only';
 import { cert, getApp, getApps, initializeApp, type App } from 'firebase-admin/app';
 import { getAuth, type Auth } from 'firebase-admin/auth';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
+// Phase 5. Imported from the SUBCPATH rather than from the `firebase-admin` root:
+// `admin.getStorage` does not exist on the default export in v13 (verified by
+// probe), and the subpath does export it. A root import would have looked correct
+// and failed at runtime.
+import { getStorage, type Storage } from 'firebase-admin/storage';
 
 import { adminConfigurationProblem, getServerEnv, isAdminConfigured } from '@/lib/env.server';
 import { AppError } from '@/lib/server/errors';
@@ -49,6 +54,8 @@ type AdminServices = {
   app: App;
   auth: Auth;
   db: Firestore;
+  /** Phase 5. Only ever used server-side; see `getAdminStorage()`. */
+  storage: Storage;
 };
 
 /**
@@ -94,6 +101,7 @@ function getAdminServices(): AdminServices {
     app,
     auth: getAuth(app),
     db: getFirestore(app),
+    storage: getStorage(app),
   };
 
   cache[CACHE_KEY] = services;
@@ -108,6 +116,19 @@ export function getAdminAuth(): Auth {
 /** The trusted server-side Firestore handle. Bypasses Security Rules. */
 export function getAdminDb(): Firestore {
   return getAdminServices().db;
+}
+
+/**
+ * The trusted server-side Storage handle. Phase 5.
+ *
+ * Bypasses Storage Security Rules, which is exactly why it is server-only and why
+ * every path it touches is one the CLIENT has no permission on. `storage.rules`
+ * makes `incidents/**` and `quarantine/**` `if false` for everyone, so the only way
+ * to read or move an object there is through this handle — after the API has made
+ * an authorization decision.
+ */
+export function getAdminStorage(): Storage {
+  return getAdminServices().storage;
 }
 
 /**

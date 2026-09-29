@@ -29,6 +29,12 @@
  * Firebase error that looks like a network problem and wastes an afternoon.
  */
 
+import {
+  ACCEPTED_AUDIO_TYPES,
+  ACCEPTED_IMAGE_TYPES,
+  REPORT_LIMITS,
+} from '@/config/limits';
+
 /** One missing or malformed variable, named precisely enough to act on. */
 export class EnvError extends Error {
   readonly variable: string;
@@ -190,6 +196,37 @@ export function firebaseConfigurationProblem(): string | null {
     'is shipped, on purpose: a fake key produces a Firebase error that looks like ' +
     'a network fault.'
   );
+}
+
+/* ========================================================================== */
+/* Uploads — the PUBLIC subset (docs/15 §7.1)                                  */
+/* ========================================================================== */
+
+/**
+ * The client-visible upload limits.
+ *
+ * A client pre-check is **UX, not a control** (docs/15 §8.1, step 1). It exists
+ * so a person learns their photo is too large immediately, instead of after
+ * selecting it, reading it, base64-ing it, and sending it to a server that then
+ * refuses it. The server is authoritative for every number here; nothing in this
+ * object decides anything.
+ *
+ * The numbers are read from `REPORT_LIMITS` rather than typed again, because a
+ * pre-check that disagrees with the server is a pre-check that lies to a person
+ * during an emergency. That is the whole reason this function exists instead of
+ * the component importing `REPORT_LIMITS` directly: the shape is the seam that
+ * lets Phase 6 replace these with server-supplied values.
+ */
+export function getUploadLimits() {
+  return {
+    maxImageBytes: REPORT_LIMITS.maxImageBytes,
+    maxAudioBytes: REPORT_LIMITS.maxAudioBytes,
+    maxAudioDurationSec: REPORT_LIMITS.maxAudioDurationSec,
+    maxImages: REPORT_LIMITS.maxImages,
+    maxAudioClips: REPORT_LIMITS.maxAudioClips,
+    acceptedImageTypes: [...ACCEPTED_IMAGE_TYPES],
+    acceptedAudioTypes: [...ACCEPTED_AUDIO_TYPES],
+  } as const;
 }
 
 /* ========================================================================== */

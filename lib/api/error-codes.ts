@@ -45,6 +45,59 @@ export const ERROR_STATUS = {
   REAUTH_REQUIRED: 403,
   ROLE_ESCALATION_GUARD: 403,
   UPLOAD_FORBIDDEN_PATH: 403,
+  /**
+   * Phase 5. The object in Storage does not match what the request claimed.
+   *
+   * `415` and not `400`: the request was well-formed, and the mismatch is between
+   * what the client SAID and what the bytes ARE, which is a media-type problem.
+   *
+   * The important property is that this is a HARD failure for the individual media
+   * item, not for the whole report. docs/15 §5.3: "The media item is dropped from
+   * the report, not silently accepted." A citizen who attached a photo and typed a
+   * good description still gets their report filed, with `meta.droppedMedia`
+   * naming what was lost.
+   */
+  UPLOAD_SIGNATURE_MISMATCH: 415,
+  /**
+   * Phase 5. The upload did not complete, or completed at a size that does not
+   * match what was signed for.
+   *
+   * `409` CONFLICT rather than `400`: nothing is wrong with the request and the
+   * client can legitimately retry it. A network drop mid-transfer is the common
+   * cause, and docs/15 §8.2 has the client retry exactly once.
+   */
+  UPLOAD_INCOMPLETE: 409,
+  /**
+   * Phase 5. The object carries a signature that is recognisably an executable or
+   * an archive.
+   *
+   * `422` rather than `415`, and the distinction is deliberate: a `415` says "that
+   * type is not accepted", which is a judgement about a category. This says
+   * something arrived that should never have been stored at all, so the object is
+   * MOVED TO `quarantine/` and audited. A `415` would imply the client made a
+   * reasonable mistake; it did not.
+   */
+  UPLOAD_QUARANTINED: 422,
+  /** Phase 5. Over a size cap. `413`, so the platform and the app agree. */
+  UPLOAD_TOO_LARGE: 413,
+  /** Phase 5. No such verified object, or the caller may not know it exists. */
+  MEDIA_NOT_FOUND: 404,
+  /**
+   * Phase 5. The object exists but has not passed verification.
+   *
+   * `422`: the request was legitimate and the file is real, it is just not
+   * available yet. A `403` would wrongly suggest a permission problem, which
+   * would send a user looking at their role instead of waiting.
+   */
+  MEDIA_NOT_VERIFIED: 422,
+  /**
+   * Phase 5. Firebase Storage is unreachable.
+   *
+   * `503` and not `502`: this is OUR dependency being down, not an upstream third
+   * party. The distinction matters to whoever reads the logs — `502` would send
+   * them looking for a provider problem.
+   */
+  STORAGE_UNAVAILABLE: 503,
 
   /* --- 404 may exist, caller may not know ------------------------------ */
   NOT_FOUND: 404,
@@ -191,5 +244,12 @@ export const RETRY_AFTER_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'AI_QUOTA',
   'MAPS_UNAVAILABLE',
   'TIMEOUT',
+  // Phase 5. A Storage outage is our dependency being down and is exactly the
+  // case docs/16 §5 describes: the client should wait and try again, and a
+  // well-behaved client needs a number to wait for. It is a `503` and not a `429`,
+  // so a client must NOT treat it as "you are being rate limited" — the distinction
+  // matters for a citizen whose photo failed to upload and who is looking at
+  // whether they did something wrong.
+  'STORAGE_UNAVAILABLE',
 ]);
 
