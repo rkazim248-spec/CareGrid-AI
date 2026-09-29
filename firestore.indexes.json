@@ -1,16 +1,24 @@
 {
-  "//": "CareGrid AI — Firestore composite indexes. Phase 2 requires NONE of them; the `users` and `profiles` queries are single-field, which Firestore indexes automatically. The list below is docs/07 §11.2 verbatim, added when Phase 3 creates the incident database. Kept now so the collection is decided before the queries are, not after.",
-  "//index_rule": "docs/07 §11.2 note: array-membership fields (array-contains, in) must come BEFORE range/equality fields. Index 6 is therefore geoCells (array-contains) > status (in) > updatedAt (desc).",
-
+  "//": "CareGrid AI - Firestore composite indexes. Phase 2 required none. Phase 3 added docs/07 11.2 verbatim. Phase 8 added nine more, because six of the ten realtime listeners in docs/11 2.2 had no working index and would have failed with `failed-precondition` on their first snapshot. The gaps were: the L1 filter variants, L3 (index 6 omitted deletedAt, so QD-8 was unsatisfied), L4, L5 (index 9 carried a `read` field the query does not filter), L6 (index 8 omitted status), and L9. Index 20 is the index docs/11 2.2 calls \"index 5\" and that was never created.",
+  "//index_rule": "docs/07 11.2 note, restated because six of the Phase 8 additions exist only for this reason: array-membership fields (array-contains, in) must come BEFORE range and equality fields, AND every `where` clause a query uses must appear in the index. An index with a field the query omits cannot be used, and an index missing a field the query has cannot either - both fail identically.",
   "indexes": [
     {
       "//": "Index 1 — the dispatcher queue default: active incidents, freshest first.",
       "collectionGroup": "incidents",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "deletedAt", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "IN" },
-        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "deletedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -18,8 +26,14 @@
       "collectionGroup": "incidents",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "reporterUid", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "reporterUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -27,8 +41,14 @@
       "collectionGroup": "incidents",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "deletedAt", "order": "DESCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "deletedAt",
+          "order": "DESCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -36,9 +56,18 @@
       "collectionGroup": "responders",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "verification", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "lastLocationAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "verification",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "lastLocationAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -46,8 +75,14 @@
       "collectionGroup": "users",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "role", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "role",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -55,9 +90,18 @@
       "collectionGroup": "incidents",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "geoCells", "arrayConfig": "CONTAINS" },
-        { "fieldPath": "status", "order": "IN" },
-        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "geoCells",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "status",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -65,8 +109,14 @@
       "collectionGroup": "statusHistory",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "actorUid", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "actorUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -74,8 +124,14 @@
       "collectionGroup": "dispatches",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "responderUid", "order": "ASCENDING" },
-        { "fieldPath": "dispatchedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "responderUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "dispatchedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -83,9 +139,18 @@
       "collectionGroup": "notifications",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "recipientUid", "order": "ASCENDING" },
-        { "fieldPath": "read", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "recipientUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "read",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -93,8 +158,197 @@
       "collectionGroup": "auditLogs",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "action", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "action",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Index 11 (Phase 8) - L1 with a urgency filter. docs/11 2.2 lists the filter set; the index must carry it.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "deletedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "urgency",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Index 12 (Phase 8) - L1 with a category filter.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "deletedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "category",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Index 13 (Phase 8) - L1 assigned/unassigned. docs/11 2.2 calls this \"index 5\"; the shipped #5 is `users role`, so this is the index the document names that was never created. Note it must list `status IN` after `assigneeUid` to match the query field order.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "deletedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "assigneeUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Index 14 (Phase 8) - L1 ordered by createdAt rather than updatedAt. The queue supports both (docs/11 2.2).",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "deletedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Index 15 (Phase 8) - L3 mapIncidents. The shipped index 6 omits `deletedAt`, so QD-8 (\"the where set must be a prefix of the index\") is not satisfied and the listener would fail. Phase 6 added deletedAt to the map query, which is the soft-delete guarantee, and the index has to follow.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "geoCells",
+          "order": "ARRAY_CONTAINS"
+        },
+        {
+          "fieldPath": "deletedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Index 16 (Phase 8) - L4 mapLocations: status != offline, freshest first. docs/07 7.2 says so in prose; no index existed.",
+      "collectionGroup": "responderLocations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "capturedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Index 17 (Phase 8) - L5. The shipped index 9 carries a `read` field this query does not filter, and an extra index field the query omits cannot be used — so the bell had no working index.",
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "recipientUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Index 18 (Phase 8) - L6. Index 8 omits `status`, so the active/accepted window had no working index.",
+      "collectionGroup": "dispatches",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "responderUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "dispatchedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Index 19 (Phase 8) - L9 slaSweep. docs/11 2.2 points at indexes 8/9; neither names slaBreachedAt.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "deletedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "slaBreachedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "IN"
+        },
+        {
+          "fieldPath": "verifiedAt",
+          "order": "DESCENDING"
+        }
       ]
     }
   ],

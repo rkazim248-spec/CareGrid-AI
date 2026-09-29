@@ -2266,6 +2266,416 @@ check(
   duplicateConstantReused ? 'a dispatch rule reads the duplicate-detection constant' : '',
 );
 
+/* ------------------------------------------------------------------------ */
+/* Phase 8 — realtime operations                                              */
+/* ------------------------------------------------------------------------ */
+/*
+ * These checks cover the properties of `docs/11` that are STRUCTURAL rather than
+ * behavioural: a rule that "listeners are created only by useRealtime* hooks"
+ * cannot be tested by mounting a component, and a lint rule that does not exist is
+ * a rule nobody follows.
+ *
+ * Each is scoped to a file or a function body. A whole-file regex for
+ * `onSnapshot` passes when it finds nothing anywhere — including when the file
+ * that should contain it was renamed, which is the "check passes for the wrong
+ * reason" failure this project's own checklist warns about.
+ */
+
+const registrySource = read('lib/realtime/listener-registry.ts');
+const queriesSource = read('lib/firestore/queries.ts');
+const primitiveSource = read('hooks/use-realtime-listener.ts');
+const connectionSource = read('lib/realtime/connection.ts');
+const mergeSource = read('lib/realtime/merge-snapshot.ts');
+const l1Hook = read('features/incidents/use-realtime-incidents.ts');
+const rowMapper = read('features/incidents/live-incident-row.ts');
+const enumsSource8 = read('lib/collections/enums.ts');
+const indexesJson = read('firestore.indexes.json');
+
+/** Strip comments, so prose about a prohibition is not read as a violation. */
+function codeOnly8(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+/** Every `.ts`/`.tsx` under a directory, as repo-relative forward-slash paths. */
+function sourceFilesUnder(dir) {
+  return walk(dir)
+    .filter((file) => /\.tsx?$/.test(file))
+    .map((file) => file.replace(/\\/g, '/'));
+}
+
+/**
+ * 41. Rule R-1: `onSnapshot` appears in EXACTLY ONE place.
+ *
+ * `docs/11 §2.1`: "Listeners are created only by `useRealtime*` hooks. A raw
+ * chained `.where()` inside an `onSnapshot` call in a component is a defect."
+ *
+ * Checked by CALL SITE rather than by import, because a component can reach
+ * `onSnapshot` through any path. A count of exactly one is the assertion; a count
+ * of zero is the interesting failure, since it means the primitive was renamed and
+ * every listener silently stopped working.
+ */
+const snapshotCallSites = [];
+for (const file of [...sourceFilesUnder('app'), ...sourceFilesUnder('components'), ...sourceFilesUnder('features'), ...sourceFilesUnder('hooks')]) {
+  const code = codeOnly8(read(file));
+  if (/\bonSnapshot\s*\(/.test(code)) snapshotCallSites.push(file);
+}
+check(
+  'Rule R-1: onSnapshot is called in exactly ONE place, the useRealtime* primitive (docs/11 §2.1)',
+  snapshotCallSites.length === 1 && snapshotCallSites[0] === 'hooks/use-realtime-listener.ts',
+  snapshotCallSites.length === 0
+    ? 'no onSnapshot call site found — the primitive was renamed or removed and every listener is dead'
+    : snapshotCallSites.length > 1
+      ? 'raw onSnapshot outside the primitive: ' + snapshotCallSites.join(', ')
+      : '',
+);
+
+/**
+ * 42. Every listener query is built by a helper in `lib/firestore/queries.ts`.
+ *
+ * QD-11: "A listener query is built by a helper, never inline." A component that
+ * chains its own `.where()` bypasses the role guard, the `limit` assertion and the
+ * soft-delete filter all at once, so this is the check that makes those three
+ * hold.
+ */
+const queryHelperExports = (queriesSource.match(/export function \w+Query\(/g) ?? []).length;
+const l1UsesHelper = /queueQuery\(db,/.test(l1Hook);
+check(
+  'Rule R-2: listener queries are built by lib/firestore/queries.ts helpers (docs/11 §2.1)',
+  queryHelperExports >= 9 && l1UsesHelper,
+  queryHelperExports < 9
+    ? `only ${queryHelperExports} query helpers exist; docs/11 §2.2 needs one per listener`
+    : !l1UsesHelper
+      ? 'the L1 hook does not call queueQuery'
+      : '',
+);
+
+/**
+ * 43. QD-1: EVERY query helper has a `limit()`.
+ *
+ * Checked per FUNCTION rather than file-wide, so a helper that loses its limit is
+ * caught even when its nine siblings still have theirs — which is precisely the
+ * case a whole-file check misses.
+ */
+const helpersWithoutLimit = [];
+for (const match of queriesSource.matchAll(/export function (\w+Query)\([^)]*\)[^{]*\{/g)) {
+  const name = match[1];
+  const start = match.index + match[0].length;
+  const end = queriesSource.indexOf('\nexport function', start);
+  const body = queriesSource.slice(start, end === -1 ? undefined : end);
+  // A single-document listener returns a DocumentReference and cannot be unbounded:
+  // it matches one document or none. Those are the documented exception.
+  const isSingleDocument = /:\s*DocumentReference\s*\{/.test(match[0]) || /\)\s*:\s*DocumentReference/.test(match[0]);
+  if (!isSingleDocument && !/fsLimit\(/.test(body)) helpersWithoutLimit.push(name);
+}
+check(
+  'QD-1: every collection query helper declares a limit() (docs/11 §6)',
+  helpersWithoutLimit.length === 0,
+  helpersWithoutLimit.length > 0 ? 'no limit() in: ' + helpersWithoutLimit.join(', ') : '',
+);
+
+/**
+ * 44. QD-2: every `incidents` query filters `deletedAt == null`.
+ *
+ * "The single most commonly forgotten filter" per the document, and its absence
+ * does not look like a bug — a soft-deleted incident is retained for audit, so an
+ * unfiltered queue shows a two-year-old report as if it were open.
+ */
+const incidentQueryBodies = [];
+{
+  // The declaration line is captured separately from the body so the single-document
+  // exemption can read the RETURN TYPE. Matching the body alone cannot tell
+  // `incidentQuery` (one document) from `queueQuery` (a filtered list).
+  const re = /export function (\w+Query)\(([^)]*)\)\s*:\s*([^{]+)\{([\s\S]*?)\n\}/g;
+  let m;
+  while ((m = re.exec(queriesSource)) !== null) {
+    incidentQueryBodies.push({
+      name: m[1],
+      params: m[2],
+      returnType: m[3].trim(),
+      body: m[4],
+      bodyStart: m.index,
+      declLength: m[0].indexOf('{'),
+    });
+  }
+}
+// A single-document or subcollection listener is exempt: a soft-deleted PARENT is
+// already gated by the parent's own canRead(), and a document query cannot filter
+// on a sibling field. The exemption is detected from the RETURN TYPE on the
+// declaration line — the first version looked for 'DocumentReference' in a
+// 200-character window and therefore exempted nothing, so the check failed on two
+// correct functions.
+const incidentHelpers = incidentQueryBodies
+  .filter((q) => /COLLECTIONS\.incidents/.test(q.body))
+  .filter((q) => {
+    // `declLength` is the offset of the opening brace, so `decl` does NOT include
+    // it. The first version required a trailing `\{` and therefore matched nothing
+    // — an exemption that never fires, which is the worst shape for a check.
+    const decl = queriesSource.slice(q.bodyStart, q.bodyStart + q.declLength);
+    if (/\)\s*:\s*DocumentReference\s*$/.test(decl.trimEnd())) return false;
+    // A subcollection under an incident inherits the parent's rules.
+    if (/SUB_COLLECTIONS\./.test(q.body)) return false;
+    return true;
+  });
+const missingSoftDelete = incidentHelpers
+  .filter((q) => !/fsWhere\('deletedAt', '==', null\)/.test(q.body))
+  .map((q) => q.name);
+check(
+  'QD-2: every incidents collection query filters deletedAt == null (docs/11 §6)',
+  missingSoftDelete.length === 0,
+  missingSoftDelete.length > 0 ? 'missing the soft-delete filter: ' + missingSoftDelete.join(', ') : '',
+);
+
+/**
+ * 45. QD-4: the ops-only query builders REFUSE a non-ops role.
+ *
+ * `docs/11 §11.3` SEC-6: "A citizen client has **no** code path that constructs L1,
+ * L3, L4, L8, or L9." The guard is UX, not security — the rules are — so the
+ * check is that the guard exists and its own comment says which of the two it is.
+ */
+const opsQueryCount = (queriesSource.match(/assertOpsRole\(input\.role, '/g) ?? []).length;
+const guardExplainsItself = /UX protection, not a security boundary/.test(queriesSource);
+check(
+  'QD-4: the five ops-only query builders refuse a non-ops role, and say so (docs/11 §6, §11.3 SEC-6)',
+  opsQueryCount === 4 && guardExplainsItself,
+  opsQueryCount !== 4
+    ? `only ${opsQueryCount} of the 4 ops-only builders call assertOpsRole (L1, L4, L8, L9)`
+    : !guardExplainsItself
+      ? 'the role guard no longer documents that it is UX, not a security boundary'
+      : '',
+);
+
+/**
+ * 46. SEC-4: the notification query has NO parameter to widen it.
+ *
+ * "L5's query is `where('recipientUid','==',uid)` and the hook exposes **no
+ * parameter** to widen it. There is no `?recipientUid=` in the client path."
+ *
+ * Asserted as a PARAMETER COUNT, not a regex on the body: a function whose only
+ * parameter is `uid` cannot be widened, whatever its body does. That is the
+ * property the document is actually asking for.
+ */
+const notifSig = queriesSource.match(/export function notificationQuery\(([^)]*)\)/);
+const notifParams = notifSig === null ? [] : (notifSig[1].match(/(db|uid|role|limit|recipientId)/g) ?? []);
+check(
+  'SEC-4: the notification query cannot be widened to another recipient (docs/11 §11.3)',
+  notifSig !== null && notifParams.length === 2 && notifParams.includes('db') && notifParams.includes('uid'),
+  notifSig === null
+    ? 'notificationQuery not found'
+    : 'notificationQuery takes ' + JSON.stringify(notifParams) + ' — a recipient selector would be a permission-denied waiting to happen',
+);
+
+/**
+ * 47. §3.3: `includeMetadataChanges` is OFF by default in the primitive.
+ *
+ * Enabling it by default would quadruple the snapshot rate of the listeners that do
+ * not need it, to serve a pending-state flag only some of them use. `docs/11 §3.3`
+ * turns it on for four of ten, and the default has to be `false` for that table to
+ * mean anything.
+ */
+const metadataDefaultsOff = /includeMetadataChanges = false/.test(primitiveSource);
+const l1OptsIn = /includeMetadataChanges: true/.test(l1Hook);
+check(
+  'docs/11 §3.3: includeMetadataChanges defaults to OFF and only L1 opts in (4 of 10 listeners)',
+  metadataDefaultsOff && l1OptsIn,
+  !metadataDefaultsOff
+    ? 'the primitive defaults includeMetadataChanges to true, which multiplies snapshot cost app-wide'
+    : 'the L1 hook does not opt in, so the queue cannot show a pending state',
+);
+
+/**
+ * 48. No client module imports a server-only module.
+ *
+ * NFR-013. The project already has an ESLint `no-restricted-imports` rule for
+ * this, and it FIRED during this phase when the row mapper reached for
+ * `lib/server/serialize.ts`'s `toIso`. The check exists so the boundary survives a
+ * rule change: a client file importing `@/lib/server/` will not build, and the
+ * failure should be caught here first with a message that says which file.
+ */
+const serverOnlyLeaks = [];
+for (const file of [...sourceFilesUnder('hooks'), ...sourceFilesUnder('features'), ...sourceFilesUnder('components')]) {
+  const code = codeOnly8(read(file));
+  const re = /from\s+'@\/lib\/server\/[a-z-]+'/g;
+  let m;
+  while ((m = re.exec(code)) !== null) serverOnlyLeaks.push(`${file} -> ${m[0]}`);
+}
+check(
+  'No client module imports @/lib/server/* (NFR-013, docs/05 §4)',
+  serverOnlyLeaks.length === 0,
+  serverOnlyLeaks.join('; '),
+);
+
+/**
+ * 49. The connection state is DERIVED, and `lastSyncedAt === null` is never `connected`.
+ *
+ * brief §4: "Never falsely display 'Connected' if the realtime connection is
+ * unavailable." The specific claim under test is that a client which has attached
+ * listeners but received nothing yet is `connecting`, not `connected` — the window
+ * in which a green "Live" dot would sit over an empty list.
+ */
+const connectedNeedsSync =
+  /if \(facts\.lastSyncedAt === null\) return 'connecting';/.test(connectionSource) &&
+  /firestoreStatus === 'unavailable'\) return 'reconnecting'/.test(connectionSource);
+const errorBeforeOffline = /if \(facts\.hasError\) return 'error';[\s\S]{0,80}if \(!facts\.navigatorOnLine\)/.test(
+  connectionSource,
+);
+check(
+  'Connection state is derived, and a missing snapshot is never "connected" (docs/11 §4.2, brief §4)',
+  connectedNeedsSync && errorBeforeOffline,
+  !connectedNeedsSync
+    ? 'deriveRealtimeState can return connected with lastSyncedAt === null, or cannot report reconnecting'
+    : 'a listener error is not distinguished from being offline, so a permission defect sends the user to check their router',
+);
+
+/**
+ * 50. The two staleness constants cannot disagree.
+ *
+ * `lib/realtime/connection.ts` owns `STALE_AFTER_MS`; the primitive carries a
+ * duplicate because it has no dependency on the connection store. A primitive that
+ * thought a payload was fresh while the banner thought it was stale is a
+ * contradiction on the same screen — so the duplication is pinned to a constant.
+ */
+const primitiveStale = primitiveSource.match(/const STALE_THRESHOLD_MS = ([\d_]+);/);
+const connectionStale = connectionSource.match(/export const STALE_AFTER_MS = ([\d_]+);/);
+check(
+  'The primitive and the banner use the SAME staleness threshold (docs/11 §4.2)',
+  primitiveStale !== null && connectionStale !== null && primitiveStale[1] === connectionStale[1],
+  primitiveStale === null || connectionStale === null
+    ? 'a STALE constant could not be found in one of the two modules'
+    : `primitive says ${primitiveStale[1]}ms, connection says ${connectionStale[1]}ms — the same screen would disagree about staleness`,
+);
+
+/**
+ * 51. The listener limits and the budget are the documented numbers.
+ *
+ * `docs/11 §2.1`'s `MAX_CONCURRENT_LISTENERS = 8`, and the per-listener ceilings
+ * from §2.2. These are read from the source rather than restated, so a change to
+ * either side is caught here instead of in production.
+ */
+const queueLimitInRegistry = /queue:\s*50,/.test(registrySource);
+const mapLimitInRegistry = /mapIncidents:\s*150,/.test(registrySource);
+const notifLimitInRegistry = /notifications:\s*50,/.test(registrySource);
+check(
+  'The per-listener limits are the docs/11 §2.2 numbers (queue 50, map 150, bell 50)',
+  queueLimitInRegistry && mapLimitInRegistry && notifLimitInRegistry,
+  'a listener ceiling has drifted from docs/11 §2.2',
+);
+
+/**
+ * 52. Every composite index the listeners need is declared.
+ *
+ * The first audit of `firestore.indexes.json` found six of fifteen listener query
+ * shapes with no working index. An undeclared index is not a slow query — it is a
+ * `failed-precondition` on the first snapshot, which `mapListenerError` reports as
+ * "this view needs a database index that is not deployed", i.e. the dashboard simply
+ * never updates.
+ *
+ * Asserted on the FIELDS the queries actually constrain, not on index count.
+ */
+const requiredIndexSignatures = [
+  'deletedAt,status,updatedAt',
+  'deletedAt,status,urgency,updatedAt',
+  'deletedAt,status,category,updatedAt',
+  'deletedAt,assigneeUid,status,updatedAt',
+  'deletedAt,status,createdAt',
+  'geoCells,deletedAt,status,updatedAt',
+  'status,capturedAt',
+  'recipientUid,createdAt',
+  'responderUid,status,dispatchedAt',
+  'deletedAt,slaBreachedAt,status,verifiedAt',
+];
+const declaredSignatures = new Set(
+  (JSON.parse(indexesJson).indexes ?? []).map((entry) =>
+    (entry.fields ?? []).map((f) => f.fieldPath).join(','),
+  ),
+);
+const undeclaredIndexes = requiredIndexSignatures.filter((sig) => !declaredSignatures.has(sig));
+check(
+  'Every realtime listener query has a matching composite index declared (docs/11 §2.2)',
+  undeclaredIndexes.length === 0,
+  undeclaredIndexes.length > 0
+    ? 'no index for: ' + undeclaredIndexes.join(' | ')
+    : '',
+);
+
+/**
+ * 53. The `in` sets stay within Firestore's limit.
+ *
+ * QD-6. A set that grows past the cap fails at RUNTIME, on the first snapshot, as
+ * an `invalid-argument` the user sees as an empty queue. Asserted against the
+ * exported sets so adding a status to an enum is caught here.
+ */
+const setCapsOk = /SET_SIZE_CAPS = \{[\s\S]{0,120}?in: 30,/.test(enumsSource8);
+const openStatusesHasSeven = (enumsSource8.match(/OPEN_STATUSES = \[([\s\S]*?)\] as const/) ?? ['', ''])[1]
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean).length === 7;
+check(
+  'The `in` sets are within Firestore’s 30-value cap, and OPEN_STATUSES is the documented 7 (QD-6)',
+  setCapsOk && openStatusesHasSeven,
+  !setCapsOk
+    ? 'SET_SIZE_CAPS does not declare the Firestore limit'
+    : 'OPEN_STATUSES is not the 7-value set docs/11 §2.1 names',
+);
+
+/**
+ * 54. The live row does NOT claim to be a full `Incident`.
+ *
+ * `docs/11 §11.2`: `slaState`, `ageMin` and `distanceM` are server-derived and MUST
+ * come through the API. A row type that structurally satisfied `Incident` would
+ * make the omission invisible at the type level, which is where it would do the
+ * most damage.
+ */
+const rowOmitsServerDerived = /LIVE_ROW_OMITTED_FIELDS = \[[\s\S]{0,200}?'slaState'/.test(rowMapper) &&
+  /'ageMin'/.test(rowMapper) &&
+  /'distanceM'/.test(rowMapper);
+const rowIsNotIncident = /export type LiveIncidentRow = \{/.test(rowMapper) &&
+  !/LiveIncidentRow\s*(?:extends|=\s*Incident)/.test(rowMapper);
+check(
+  'The live row omits the server-derived fields rather than guessing them (docs/11 §11.2)',
+  rowOmitsServerDerived && rowIsNotIncident,
+  !rowOmitsServerDerived
+    ? 'LIVE_ROW_OMITTED_FIELDS does not name slaState/ageMin/distanceM'
+    : 'LiveIncidentRow claims to be an Incident, so the omission is invisible to the compiler',
+);
+
+/**
+ * 55. A pending document is never merged field-by-field.
+ *
+ * `docs/11 §3.4` M-1. A field-level merge is how "the badge says verified but the
+ * list says new" happens: the local write set one field and the snapshot carried
+ * the rest, producing a document that never existed.
+ */
+const mergeSkipsPending = /hasPendingWrites\) \{\s*\n\s*nextPending\.add\(id\);/.test(mergeSource);
+const mergeSkipsDiff = /continue;/.test(mergeSource);
+const itemsComeFromSnapshot = /for \(const doc of snapshot\.docs/.test(mergeSource);
+check(
+  'M-1/M-2: a pending document replaces wholesale, and items come from the snapshot (docs/11 §3.4)',
+  mergeSkipsPending && mergeSkipsDiff && itemsComeFromSnapshot,
+  !mergeSkipsPending
+    ? 'a pending document is not short-circuited, so a field-level merge is possible'
+    : 'items are not derived from the snapshot, so M-2 (leave the window = leave the list) does not hold',
+);
+
+/**
+ * 56. The `system` sentinel is not reachable from any client module.
+ *
+ * `docs/07 §4.3` and Phase 7's check 25 confine it to `new -> triaged`. A realtime
+ * hook that could pass a system actor would reopen the one path the AI is allowed
+ * to take on its own.
+ */
+const clientSystemActors = [];
+for (const file of [...sourceFilesUnder('hooks'), ...sourceFilesUnder('features')]) {
+  const code = codeOnly8(read(file));
+  if (/role:\s*'system'/.test(code)) clientSystemActors.push(file);
+}
+check(
+  'No client module can pass a `system` actor to a listener or a mutation (docs/07 §4.3, FR-020)',
+  clientSystemActors.length === 0,
+  clientSystemActors.join('; '),
+);
+
 const pad = Math.max(...results.map((r) => r.label.length));
 let failed = 0;
 
