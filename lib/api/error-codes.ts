@@ -120,6 +120,32 @@ export const ERROR_STATUS = {
   ACCOUNT_ALREADY_EXISTS: 409,
   EMAIL_ALREADY_EXISTS: 409,
 
+  /**
+   * The Phase 7 dispatch conflicts. `docs/08 §3.6`'s error list names all of
+   * these, and `docs/08`'s status table puts them at 409 — "State conflict",
+   * which is the right class: nothing is wrong with the request, the world
+   * changed under it, and the client may legitimately retry with a different
+   * responder.
+   *
+   * Declared here rather than thrown as free strings because a code absent from
+   * this table resolves to a **500** (see `statusForCode` in `lib/server/errors.ts`).
+   * An assignment that lost a race would then be reported to the dispatcher as a
+   * server fault, which is both untrue and unactionable — the correct answer is
+   * "this responder is no longer available, choose another".
+   */
+  ALREADY_ASSIGNED: 409,
+  RESPONDER_UNAVAILABLE: 409,
+  RESPONDER_NOT_VERIFIED: 409,
+  RESPONDER_AT_CAPACITY: 409,
+  /**
+   * FR-053. An incident cannot be `assigned` without an `active` dispatch, so a
+   * caller that skipped the dispatch step gets told which invariant it broke.
+   * `docs/08 §3.8` lists `NO_ACTIVE_DISPATCH` alongside `RESOLUTION_CODE_REQUIRED`
+   * in the 422 group; it is a 409 here because the client CAN fix it by creating
+   * the dispatch and retrying, which is the 409 definition.
+   */
+  NO_ACTIVE_DISPATCH: 409,
+
   /* --- 413 the request itself is too large ----------------------------- */
   /**
    * A body above the route's `maxBytes`. Deliberately a 413 and not a 400,
@@ -134,6 +160,14 @@ export const ERROR_STATUS = {
 
   /* --- 422 well-formed but semantically rejected ------------------------ */
   EMPTY_REPORT: 422,
+  /**
+   * FR-054. `docs/08 §3.8` lists it: an incident cannot become `resolved` without
+   * a `resolutionCode`, and a 422 is right because the request was well-formed and
+   * the DOMAIN refused it — the caller can fix it by supplying the missing field.
+   * Distinct from `RESOLUTION_CODE_REQUIRED`'s sibling `NO_ACTIVE_DISPATCH`, which
+   * is a 409 because the fix is a different request rather than a field.
+   */
+  RESOLUTION_CODE_REQUIRED: 422,
   /**
    * The caller named a capability that does not exist in the 61-row matrix.
    * `422` per docs/16 §3.3 — the request parsed, and the domain refused the

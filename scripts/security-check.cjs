@@ -1772,6 +1772,500 @@ check(
 /* Report                                                                     */
 /* ------------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------------ */
+/* Phase 7 — responder dispatch                                              */
+/* ------------------------------------------------------------------------ */
+/*
+ * The Phase 7 checks are the ones where a FALSE PASS is expensive:
+ *
+ *  - "no route can dispatch without a human" is brief §3's entire requirement,
+ *    and the failure mode is a system that quietly dispatches by itself.
+ *  - "the assignment is transactional" is brief §15's race protection, and the
+ *    failure mode is two dispatchers taking one responder.
+ *  - "no client-supplied role" is brief §36, and the failure mode is privilege
+ *    escalation.
+ *
+ * ---------------------------------------------------------------------------
+ * EVERY CHECK BELOW IS STRIPPED OF COMMENTS FIRST, AND THAT MATTERS
+ * ---------------------------------------------------------------------------
+ * Four of these checks look for a prohibited STRING, and the code that prohibits
+ * it necessarily CONTAINS it: `services/dispatch/notify.ts` declares
+ * `FORBIDDEN_NOTIFICATION_CLAIMS` as a list of the very sentences it refuses to
+ * write, and `config/dispatch.ts` explains in a comment why it has no env vars.
+ *
+ * Without stripping, those checks fail on a CORRECT implementation — which is
+ * worse than not having them, because the fix a developer reaches for is to
+ * delete the list of forbidden phrases, which removes the control.
+ *
+ * So `codeOnly()` is applied to every source before a string check, and
+ * `excludes()` removes a named declaration for the one check whose subject IS a
+ * declaration of forbidden strings.
+ */
+
+const transitionsSource = read('lib/dispatch/transitions.ts');
+const assignSource = read('services/dispatch/assign.ts');
+const lifecycleSource = read('services/dispatch/lifecycle.ts');
+const notifySource = read('services/dispatch/notify.ts');
+const auditSource = read('services/dispatch/audit.ts');
+const historySource = read('services/dispatch/status-history.ts');
+const candidatesSource = read('services/dispatch/candidates.ts');
+const dispatchValidators = read('validators/dispatch.ts');
+const dispatchConfig = read('config/dispatch.ts');
+const dispatchRoute = read('app/api/incidents/[id]/dispatch/route.ts');
+const candidatesRoute = read('app/api/incidents/[id]/candidates/route.ts');
+const statusRoute = read('app/api/incidents/[id]/status/route.ts');
+const dispatchIdRoute = read('app/api/dispatches/[dispatchId]/route.ts');
+const enumsSource = read('types/enums.ts');
+
+/**
+ * Strip comments, so a comment that EXPLAINS a prohibition is not read as a
+ * violation of it.
+ *
+ * Deliberately crude — it is a lexer for two comment forms, not a parser. It does
+ * not need to understand string literals, because the only strings it could
+ * mistake for a comment are `//` and `/*` inside a literal, and neither appears in
+ * the sources these checks read. A real lexer here would be more code to get wrong
+ * for no additional safety.
+ */
+function codeOnly(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+/**
+ * Drop a named declaration from a source, so a check about forbidden strings is
+ * not defeated by the list that NAMES them.
+ */
+function excludes(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  if (start === -1) return source;
+  const end = source.indexOf(endMarker, start);
+  return end === -1 ? source.slice(0, start) : source.slice(0, start) + source.slice(end);
+}
+
+/**
+ * The text of ONE declaration, from its marker to the next `/* ====` banner.
+ *
+ * Added after two Phase 7 checks turned out to be passing for the wrong reason,
+ * both with the same shape: each searched a WHOLE FILE for a string that also
+ * appears somewhere else in it, so removing it from the intended declaration left
+ * the suite green.
+ *
+ *   - check 27 looked for `activeIncidentCount: activeCount + 1` anywhere in
+ *     `assignResponder`, and found it in the AUDIT DIFF as well as in the write.
+ *     Deleting the write — the thing that makes concurrent assigns conflict — left
+ *     the audit value in place and the check passed.
+ *   - check 37 looked for `reason: reason.optional()` anywhere in the validators,
+ *     and found it in the STATUS schema as well as the REJECT one.
+ *
+ * A whole-file check cannot distinguish "the property is set" from "the property
+ * is mentioned". Scoping to the declaration makes the two different questions.
+ */
+function blockAfter(source, marker) {
+  const start = source.indexOf(marker);
+  if (start === -1) return '';
+  const end = source.indexOf('/* ====', start);
+  return end === -1 ? source.slice(start) : source.slice(start, end);
+}
+
+/**
+ * 25. The AI may not reach `assigned`, and `auto_suggest` is unreachable.
+ *
+ * brief §3: "AI may recommend suitable responders, but AI must NOT autonomously
+ * dispatch emergency responders." `docs/07 §8` allows a dispatch `mode` of
+ * `auto_suggest`, so the ENUM is not the control — the code paths are.
+ *
+ * Two independent assertions, because either alone is insufficient: the table
+ * could grant `system` a cell, or a route could pass `mode: 'auto_suggest'`.
+ */
+const transitionsCode = codeOnly(transitionsSource);
+// Scoped to the grid, not the whole file: the `Cell` union also names
+// `'system (ai)'`, and counting that would be counting the type, not a grant.
+const matrixRegion = (() => {
+  const start = transitionsCode.indexOf('const NOBODY');
+  const end = transitionsCode.indexOf('const TRANSITION_MATRIX');
+  return start === -1 || end === -1 ? '' : transitionsCode.slice(start, end);
+})();
+const systemCellCount = (matrixRegion.match(/'system \(ai\)'/g) ?? []).length;
+const autoSuggestUnreachable =
+  !/mode:\s*'auto_suggest'/.test(dispatchRoute) &&
+  !/mode:\s*'auto_suggest'/.test(dispatchIdRoute) &&
+  !/mode:\s*'auto_suggest'/.test(statusRoute) &&
+  !/mode:\s*'auto_suggest'/.test(lifecycleSource) &&
+  // The input type is narrowed, so a route cannot pass it without a deliberate
+  // cast — and a cast is a visible, reviewable act.
+  /Extract<DispatchMode, 'manual' \| 'self_claimed'>/.test(assignSource);
+check(
+  'The AI cannot dispatch: one system cell, and auto_suggest unreachable (brief §3)',
+  systemCellCount === 1 && autoSuggestUnreachable,
+  systemCellCount !== 1
+    ? `the transition grid declares 'system (ai)' in ${systemCellCount} cells; docs/07 §4.3 allows exactly one`
+    : !autoSuggestUnreachable
+      ? "a route or service can pass mode: 'auto_suggest', or the input type is not narrowed"
+      : '',
+);
+
+/**
+ * 26. `isLiveAssignee` is DERIVED, never received.
+ *
+ * brief §36: "Never trust: ... client status." `isLiveAssignee` is the flag that
+ * grants a responder the `en_route` / `on_scene` / `resolved` cells, so a client
+ * that could set it would be able to drive any incident's lifecycle.
+ */
+const liveAssigneeFromFirestore =
+  /isLiveAssignee:\s*liveDispatch\?\.responderUid === input\.actor\.uid/.test(lifecycleSource) &&
+  /isLiveAssignee:\s*false/.test(assignSource);
+const liveAssigneeNotAField = !/['"`]?isLiveAssignee['"`]?\s*:/.test(codeOnly(dispatchValidators));
+check(
+  'isLiveAssignee is derived from Firestore, and is not a request field (brief §36)',
+  liveAssigneeFromFirestore && liveAssigneeNotAField,
+  !liveAssigneeFromFirestore
+    ? 'a transition context builds isLiveAssignee from something other than the live dispatch'
+    : !liveAssigneeNotAField
+      ? 'validators/dispatch.ts declares isLiveAssignee, so a client could send it'
+      : '',
+);
+
+/**
+ * 27. The assignment is a TRANSACTION, and it WRITES the responder.
+ *
+ * brief §15 and §39. The subtle half is the write: Firestore only guarantees
+ * conflict detection for documents a transaction both reads AND writes, so a
+ * transaction that merely read `responders/{uid}` would still let two dispatchers
+ * commit against the same responder.
+ */
+const assignBody = functionBodyOf(assignSource, 'assignResponder');
+// Scoped to the write, not the whole body: the same expression appears in the
+// audit diff, and a check that matched either one would stay green when the other
+// was removed. See `blockAfter` for why that is a documented failure mode.
+const responderWrite = /transaction\.set\(\s*responderRef,[\s\S]{0,240}?activeIncidentCount: activeCount \+ 1/.test(
+  assignBody,
+);
+const assignIsTransactional = assignBody.includes('runTransaction') && responderWrite;
+check(
+  'Assignment is transactional AND writes the responder, so concurrent assigns conflict',
+  assignIsTransactional,
+  !assignBody.includes('runTransaction')
+    ? 'assignResponder does not use runTransaction, so the availability check is a race'
+    : 'assignResponder reads the responder but never WRITES activeIncidentCount to it, so two dispatchers can both commit',
+);
+
+/**
+ * 28. `assigneeUid` is written in the SAME transaction, and CLEARED on decline.
+ *
+ * Not an optimisation. `firestore.rules`' `canRead()` for `incidents` grants a
+ * responder access when `resource.data.assigneeUid == request.auth.uid`, so a
+ * dispatch that did not denormalise this field (docs/07 §4) would leave the
+ * assigned responder unable to read their own incident — the workflow would work
+ * in the database and be unreachable from the client.
+ *
+ * And clearing it on a decline is a SECURITY property, not tidiness: leaving it
+ * set keeps granting read access to a responder who just walked away.
+ */
+const assigneeUidWritten =
+  assignBody.includes('assigneeUid: input.responderUid') && assignBody.includes('runTransaction');
+const assigneeUidClearedOnDecline = /assigneeUid: null[\s\S]{0,120}?assignee: null/.test(
+  codeOnly(lifecycleSource),
+);
+check(
+  'incidents.assigneeUid is denormalised on assign and CLEARED on decline (docs/07 §4, firestore.rules)',
+  assigneeUidWritten && assigneeUidClearedOnDecline,
+  !assigneeUidWritten
+    ? 'assignResponder does not write assigneeUid, so firestore.rules canRead() grants the assignee no access'
+    : 'a decline does not clear assigneeUid, so a responder who declined keeps read access',
+);
+
+/**
+ * 29. No dispatch route reads a role, a uid, or a status from the body.
+ *
+ * brief §36's list, checked against the source rather than trusted to the schema.
+ * A schema check alone would not catch a route reading a property the schema never
+ * declared, because `withRequest` types the body — it does not strip it at runtime.
+ */
+const bodyTrustViolations = [];
+for (const [name, source] of [
+  ['dispatch', dispatchRoute],
+  ['candidates', candidatesRoute],
+  ['status', statusRoute],
+  ['dispatchId', dispatchIdRoute],
+]) {
+  const code = codeOnly(source);
+  for (const pattern of [
+    /body\.(role|uid|actorUid|isLiveAssignee|isReporter|verification|assigneeUid|dispatcherUid)\b/,
+    /body\.(status|incidentStatus)\b/,
+  ]) {
+    if (pattern.test(code)) bodyTrustViolations.push(`${name}: ${pattern}`);
+  }
+}
+const actorAlwaysFromToken = /actor:\s*\{\s*uid: user\.uid,\s*role: user\.role\s*\}/.test(codeOnly(statusRoute));
+check(
+  'No dispatch route reads a role, uid, or status from the request body (brief §36)',
+  bodyTrustViolations.length === 0 && actorAlwaysFromToken,
+  bodyTrustViolations.length > 0
+    ? bodyTrustViolations.join('; ')
+    : !actorAlwaysFromToken
+      ? 'the status route does not build its actor from the verified token'
+      : '',
+);
+
+/**
+ * 30. Every dispatch route gates on its documented capability.
+ *
+ * A route that reaches `assignResponder` with no capability check is a route whose
+ * only protection is the service's internal `actor.role` — and `role` arrives as a
+ * parameter, so a future route passing the wrong thing would be invisible here.
+ */
+const routeGates = [
+  ['dispatch', dispatchRoute, 'r29_assignResponder'],
+  ['candidates', candidatesRoute, 'r28_seeCandidateResponders'],
+  ['dispatchId', dispatchIdRoute, 'r30_unassignWithdraw'],
+];
+const ungatedRoutes = routeGates
+  .filter(([, source, capability]) => !source.includes(`requireCapability(user, '${capability}'`))
+  .map(([name, , capability]) => `${name} is missing requireCapability(${capability})`);
+check(
+  'Every dispatch route requires its documented capability (r28/r29/r30)',
+  ungatedRoutes.length === 0,
+  ungatedRoutes.join('; '),
+);
+
+/**
+ * 31. The status route gates on a capability but does NOT blanket-deny citizens.
+ *
+ * `docs/07 §4.3` grants the `reporter` two transitions, and this route is the only
+ * path to them. A blanket `requireRole(['dispatcher','admin'])` would make the
+ * reporter's cancellation unreachable — and a check written to catch "citizens must
+ * not dispatch" would have "fixed" that by breaking a documented capability.
+ */
+const statusUsesCapability = /requireCapability\(user, 'r01_createIncident'/.test(codeOnly(statusRoute));
+const statusNoBlanketRoleDenial = !/requireRole\(user, \['dispatcher', 'admin'\]\)/.test(codeOnly(statusRoute));
+check(
+  'The status route gates on capability, leaving the reporter cancel path reachable (docs/07 §4.3)',
+  statusUsesCapability && statusNoBlanketRoleDenial,
+  !statusUsesCapability
+    ? 'the status route no longer calls requireCapability'
+    : 'the status route blanket-denies non-ops roles, which would remove the reporter cancel path',
+);
+
+/**
+ * 32. No ETA is ever computed.
+ *
+ * brief §30: "Do not claim travel time unless a real routing API has been
+ * implemented. Distance is not the same than ETA." There is no routing provider in
+ * this project, so any arithmetic producing `etaSec` would be a fabrication a
+ * dispatcher would act on.
+ *
+ * Comments are stripped, because `candidates.ts` and `assign.ts` both explain at
+ * length why they do NOT compute one, and those explanations contain the word.
+ */
+const etaViolations = [];
+if (!/etaSec:\s*null/.test(codeOnly(assignSource))) etaViolations.push('assign.ts does not write etaSec: null');
+if (/etaSec\s*[:=]\s*(?!null\b)[^;\n]*[\d(]/.test(codeOnly(assignSource))) {
+  etaViolations.push('assign.ts computes an etaSec value');
+}
+if (/\beta\w*\s*[:=]\s*[^(]*\d/.test(codeOnly(candidatesSource))) {
+  etaViolations.push('candidates.ts computes a travel-time value');
+}
+check(
+  'No travel time is ever computed or claimed; etaSec is written null (brief §30)',
+  etaViolations.length === 0,
+  etaViolations.join('; '),
+);
+
+/**
+ * 33. No notification copy overclaims.
+ *
+ * brief §28. The same check Phase 6 applies to geolocation copy, applied to the
+ * dispatch copy — "an ambulance is on the way" is the most damaging string this
+ * phase could render, and it is exactly what someone adds to make a flow feel
+ * reassuring.
+ *
+ * The forbidden-phrase LIST is excluded from the subject, for the reason in this
+ * section's header: `FORBIDDEN_NOTIFICATION_CLAIMS` contains every phrase it
+ * refuses, and including it would make this check fail on a correct module.
+ */
+const notifyCode = excludes(
+  codeOnly(notifySource),
+  'const FORBIDDEN_NOTIFICATION_CLAIMS',
+  // The closing bracket of THAT array literal, not the next section header.
+  // A section-header marker cut from the list all the way past `notifyInApp`,
+  // which removed the very catch block this file's check 38 looks for — a check
+  // that failed because it had deleted its own subject.
+  '];',
+);
+const dispatchOverclaims = [
+  /emergency services (are|is) arriving/i,
+  /help is on the way/i,
+  /responders? (are|is) (on the way|en route)/i,
+  /an ambulance (has been sent|is on the way)/i,
+  /we('ve| have) alerted authorities/i,
+  // `\beta\b` rather than `eta`, which matches inside `getAdminDb`/`metadata`.
+  /\betas?\b[^.\n]{0,20}(minute|min\b|arriv)/i,
+].filter((pattern) => pattern.test(notifyCode));
+check(
+  'No dispatch notification copy claims help is coming (brief §28)',
+  dispatchOverclaims.length === 0,
+  dispatchOverclaims.map((source) => source.source ?? String(source)).join('; '),
+);
+
+/**
+ * 34. The audit deny-list is enforced on BOTH write paths.
+ *
+ * `docs/07 §11.5`: "whitelisted fields only - **never** raw PII or evidence
+ * URLs". The check is that the deny-list is actually CONSULTED on the write path
+ * and not merely declared: a declared-but-uncalled set reads as a control and is
+ * not one. The in-transaction path is checked separately because that is the one
+ * an assignment actually uses.
+ */
+const auditCode = codeOnly(auditSource);
+const auditDenyListDeclared = /FORBIDDEN_AUDIT_FIELDS[^=]*=\s*new Set/.test(auditCode);
+const auditDiffPath = /function buildAuditDiff[\s\S]{0,400}?assertAuditSafe\(whitelist\)/.test(auditCode);
+const auditTransactionPath = /function auditLogInTransaction[\s\S]{0,600}?assertAuditSafe\(/.test(auditCode);
+const auditNamesSensitiveFields = /['"]location['"]/.test(auditCode) && /['"]signedReadUrl['"]/.test(auditCode);
+check(
+  'The audit deny-list is enforced on BOTH the plain and in-transaction write paths (docs/07 §11.5)',
+  auditDenyListDeclared && auditDiffPath && auditTransactionPath && auditNamesSensitiveFields,
+  !auditDenyListDeclared
+    ? 'FORBIDDEN_AUDIT_FIELDS is not declared as a Set'
+    : !auditDiffPath
+      ? 'buildAuditDiff does not call assertAuditSafe'
+      : !auditTransactionPath
+        ? 'auditLogInTransaction does not call assertAuditSafe — that is the path an assignment uses'
+        : 'the deny-list does not name location or signedReadUrl',
+);
+
+/**
+ * 35. `statusHistory` is append-only in CODE, not just in the rules.
+ *
+ * `docs/07 §6`: "Append-only. Never updated, never deleted." brief §24: "Do not
+ * allow history entries to be silently edited." A rules-level `write: if false`
+ * covers the client; this covers a future service.
+ */
+const historyCode = codeOnly(historySource);
+const historyWriteViolations = [];
+if (/\.update\(/.test(historyCode)) historyWriteViolations.push('status-history.ts calls .update()');
+if (/\.delete\(/.test(historyCode)) historyWriteViolations.push('status-history.ts calls .delete()');
+if (!/merge:\s*false/.test(historyCode)) historyWriteViolations.push('the write is not merge: false');
+check(
+  'statusHistory is append-only in code: no update, no delete, merge false (docs/07 §6)',
+  historyWriteViolations.length === 0,
+  historyWriteViolations.join('; '),
+);
+
+/**
+ * 36. Every audit action Phase 7 writes is a declared `AuditAction`.
+ *
+ * An action outside the enum is an action no compliance review can filter for
+ * (FR-132).
+ *
+ * Membership is a PLAIN SUBSTRING test, not a regex. The first draft built a
+ * RegExp with the action escaped, and a `.` in `incident.assign` plus a template
+ * literal is enough escaping machinery to fail for a reason unrelated to the
+ * thing being checked. "Is this exact quoted string present" needs no escaping.
+ */
+const phase7Actions = [
+  ...[...assignSource.matchAll(/action:\s*'([a-z_.]+)'/g)].map((match) => match[1]),
+  ...[...lifecycleSource.matchAll(/action:\s*([?:\s\n()a-z_.']*?'([a-z_.]+)'[a-z_.']*)/g)].map(
+    (match) => match[match.length - 1],
+  ),
+];
+const undeclaredActions = [...new Set(phase7Actions)].filter(
+  (action) => !enumsSource.includes(`'${action}'`),
+);
+check(
+  'Every audit action Phase 7 writes is declared in AUDIT_ACTIONS (FR-132)',
+  phase7Actions.length > 0 && undeclaredActions.length === 0,
+  phase7Actions.length === 0
+    ? 'no audit action was found in assign.ts or lifecycle.ts — the check is looking at nothing'
+    : undeclaredActions.length > 0
+      ? 'undeclared: ' + undeclaredActions.join(', ')
+      : '',
+);
+
+/**
+ * 37. A decline is recorded even without a reason.
+ *
+ * brief §16 allows a reason but does not require one, and `docs/07 §6` DOES
+ * require a reason for an `unassigned` EVENT. Those reconcile by requiring the
+ * reason on the event while leaving it optional on the REQUEST — so the check
+ * asserts the builder enforces it AND the schema does not.
+ */
+const declineReasonRequiredInHistory =
+  /REASON_REQUIRED_EVENTS[\s\S]{0,240}?'unassigned'/.test(historyCode) &&
+  /MissingHistoryReasonError/.test(historyCode);
+// Scoped to the reject schema. `reason: reason.optional()` also appears in the
+// status schema, so an unscoped check would stay green when the reject one
+// tightened — which is the exact regression this asserts against.
+// Scoped BEFORE stripping, not after: `codeOnly` replaces block comments with a
+// space, which removes the `/* ====` banner `blockAfter` cuts on — so stripping
+// first made the scope silently empty and the check pass for no reason at all.
+const rejectSchema = codeOnly(blockAfter(dispatchValidators, 'export const rejectDispatchBodySchema ='));
+const declineReasonOptionalInRequest =
+  rejectSchema.length > 0 && /reason:\s*reason\.optional\(\)/.test(rejectSchema);
+check(
+  'A decline records a reason on the EVENT while the request leaves it optional (brief §16, docs/07 §6)',
+  declineReasonRequiredInHistory && declineReasonOptionalInRequest,
+  !declineReasonRequiredInHistory
+    ? 'an unassigned history event does not require a reason'
+    : rejectSchema.length === 0
+      ? 'rejectDispatchBodySchema was not found — the check is looking at nothing'
+      : 'the reject body makes a reason mandatory, which would force a responder to record a false one',
+);
+
+/**
+ * 38. Notification failure cannot fail the request.
+ *
+ * FR-107. Asserted on the STRUCTURE — that `notifyInApp` catches per recipient, and
+ * that the routes notify AFTER the service call — rather than on a comment.
+ */
+const notifyInAppCatches = /catch\s*\(error\)\s*\{[\s\S]{0,900}?failed \+= 1/.test(notifyCode);
+const notificationAfterTransaction =
+  /const result = await assignResponder\([\s\S]{0,3000}?await notifyInApp\(/.test(dispatchRoute) &&
+  /const result = await respondToDispatch\([\s\S]{0,3000}?await notifyDispatchAnswered\(/.test(
+    dispatchIdRoute,
+  );
+check(
+  'A notification failure cannot fail the request that caused it (FR-107)',
+  notifyInAppCatches && notificationAfterTransaction,
+  !notifyInAppCatches
+    ? 'notifyInApp has no per-recipient catch, so one bad write would propagate to the caller'
+    : 'a route notifies before the service call, or not at all',
+);
+
+/**
+ * 39. Dispatch tunables are constants, not invented environment variables.
+ *
+ * A configurable value with no documented owner, no validation and no default is
+ * how a 5 km service radius silently becomes 500 m. `docs/21` names no tunable for
+ * these, so adding one would create a configuration surface nothing governs.
+ *
+ * Comments are stripped, because the file explains this decision in a comment that
+ * necessarily contains the word "environment".
+ */
+const inventedEnvVars = [...codeOnly(dispatchConfig).matchAll(/process\.env|env\.[A-Z_]+/g)].map(String);
+check(
+  'Dispatch tunables are constants, not undocumented env vars (docs/21)',
+  inventedEnvVars.length === 0,
+  inventedEnvVars.join('; '),
+);
+
+/**
+ * 40. The duplicate-detection radius is not reused as a dispatch threshold.
+ *
+ * `docs/07 §9`'s 500 m duplicate window and `docs/07 §7`'s service radius are
+ * different things with different numbers. A phase that reached for the duplicate
+ * constant when ranking responders would silently apply a duplicate-detection
+ * threshold to a human staffing decision.
+ */
+const duplicateConstantReused =
+  /DUPLICATE_DEFAULTS/.test(dispatchConfig) || /duplicateRadiusM/.test(codeOnly(candidatesSource));
+check(
+  'The duplicate-detection radius is not reused as a dispatch threshold (docs/07 §9 vs §7)',
+  !duplicateConstantReused,
+  duplicateConstantReused ? 'a dispatch rule reads the duplicate-detection constant' : '',
+);
+
 const pad = Math.max(...results.map((r) => r.label.length));
 let failed = 0;
 

@@ -60,3 +60,11 @@ export {
   triageIncident,
   type TriageOutcome,
 } from '@/services/ai';
+
+/**
+ * Phase 7 — dispatch. Re-exported as a namespace so the four services stay
+ * separable in the filesystem while a route reads as
+ * `dispatch.assignResponder(...)` and the collision risk between
+ * `services/dispatch` and this barrel is unambiguous to a reader.
+ */
+export * as dispatch from '@/services/dispatch';

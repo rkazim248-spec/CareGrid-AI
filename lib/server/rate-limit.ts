@@ -148,6 +148,52 @@ export const RATE_LIMIT_RULES: Readonly<Record<string, RateLimitRule>> = {
    * 15-minute URL, so the cost is a signature, not a download.
    */
   'uploads.url': { routeKey: 'uploads.url', limit: 120, windowSec: 60, subject: 'uid' },
+
+  /* --- Phase 7: dispatch ------------------------------------------------- */
+  /**
+   * 60/min. A READ, and the number is generous for the same reason
+   * `uploads.url` is: a dispatcher refreshing a candidate panel is doing exactly
+   * what the panel is for.
+   *
+   * brief §41 warns against loading all responders, and the answer to that is a
+   * narrow query and a cap (`CANDIDATE_QUERY_LIMIT`) — not a rate limit tight
+   * enough to make the panel fail while someone waits. A 409 that arrives as
+   * "too many requests" on the screen a dispatcher is reading during an incident is
+   * worse than the read it would have saved.
+   */
+  'dispatch.candidates': { routeKey: 'dispatch.candidates', limit: 60, windowSec: 60, subject: 'uid' },
+  /**
+   * 60/h. The ceiling that matters most in this phase.
+   *
+   * An assignment is a human decision with consequences — it takes a responder off
+   * whatever else they were doing. Sixty an hour is far above any plausible
+   * dispatcher's real rate (a busy desk might do twenty) while still bounding the
+   * damage from a compromised dispatcher token: without this, an attacker with a
+   * stolen session could assign every verified responder in the city in a loop, and
+   * every one of those assignments is a transaction that increments a real
+   * responder's counter and writes a real audit row.
+   */
+  'dispatch.assign': { routeKey: 'dispatch.assign', limit: 60, windowSec: 3600, subject: 'uid' },
+  /**
+   * 120/h, doubled from `dispatch.assign`.
+   *
+   * A responder's accept and decline are the cheapest and most frequent actions in
+   * the system, and the failure mode of throttling them is uniquely bad: a
+   * responder who is refused a rate-limit error on "Accept" while driving reads it
+   * as "the system is broken" and stops using the app. The cost of the extra headroom
+   * is one transaction that changes two fields.
+   */
+  'dispatch.respond': { routeKey: 'dispatch.respond', limit: 120, windowSec: 3600, subject: 'uid' },
+  /**
+   * 240/h.
+   *
+   * Higher still, and deliberately so: this wraps the *whole* lifecycle, so one
+   * incident legitimately costs a responder four calls (accept, en route, on scene,
+   * resolve) and a dispatcher correcting a mistake costs several more. A cap that
+   * a busy responder hits mid-incident is a cap that stops an incident being
+   * resolved, which is the worst outcome the rate limiter could produce.
+   */
+  'dispatch.transition': { routeKey: 'dispatch.transition', limit: 240, windowSec: 3600, subject: 'uid' },
 };
 
 /**
