@@ -276,6 +276,60 @@ export function isAiMockMode(): boolean {
 
 /* --- Uploads — docs/15 §7, read by services/uploads/* ------------------- */
 
+/* --- Duplicate detection - docs/07 §9.5, DEC-01/DEC-02 --------------------- */
+
+/**
+ * The duplicate-detection tunables.
+ *
+ * **These are environment variables because the brief requires it and the
+ * specification already does.** brief §18: "Implement duplicate detection around a
+ * configurable radius... **Do NOT hardcode 500 throughout the application.**"
+ * `docs/01` DEC-01 records the decision as "500 m duplicate radius, configurable
+ * 100-2000 m" with the rationale "a street-crossing radius", and DEC-02 sets the
+ * time window.
+ *
+ * The bounds passed to `tunableNumber` are DEC-01 and DEC-02's own ranges, so an
+ * operator who sets `DUPLICATE_RADIUS_METERS=5000` gets the documented 2000 rather
+ * than a 5 km radius that would match half a city's incidents. A configurable value
+ * whose configuration is unvalidated is a hardcoded value with extra steps.
+ *
+ * `lookbackHours` is expressed in hours because the brief and every environment
+ * variable in this project are, and converted once here to the **360 minutes**
+ * `docs/07 §9.5` specifies. The brief's example of 24 is an example; DEC-02's
+ * 6-hour default is the decision, and the two disagree. See
+ * `docs/30.7_PHASE_6_MAPS_DUPLICATES.md` §2.
+ */
+export function duplicateConfig() {
+  return {
+    /** DEC-01. 500 m, range 100-2000. */
+    radiusM: tunableNumber('DUPLICATE_RADIUS_METERS', 500, 100, 2000),
+    /**
+     * DEC-02. 360 min = 6 h, range 60-4320 min (1 h - 72 h).
+     *
+     * The env var is in HOURS because that is the unit an operator thinks in, and
+     * `tunableNumber` receives the equivalent MINUTE range so the clamp is still
+     * enforced in the unit the value is stored in. A `DUPLICATE_LOOKBACK_HOURS=1`
+     * is therefore clamped to 1 h, and `=200` to 72 h.
+     */
+    timeWindowMin: tunableNumber('DUPLICATE_LOOKBACK_HOURS', 6, 1, 72) * 60,
+    /** Auto-confirm similarity floor. `docs/07 §9.5`. */
+    textSimilarityConfirm: tunableNumber('DUPLICATE_TEXT_CONFIRM', 0.6, 0.2, 0.9),
+    /** Potential-duplicate score floor. `docs/07 §9.5`. */
+    potentialThreshold: tunableNumber('DUPLICATE_POTENTIAL', 0.55, 0.2, 0.95),
+    /**
+     * The `limit()` read cap. FR-037.
+     *
+     * **Also the Firestore read budget, and the reason `docs/07 §9.2`'s "one read"
+     * rule matters so much.** Ten queries at 50 documents each is 500 document reads
+     * for one duplicate check, which at Firestore's pricing is a real cost on every
+     * report. One query at 50 is 50.
+     */
+    maxCandidates: tunableNumber('DUPLICATE_MAX_CANDIDATES', 50, 10, 200),
+  } as const;
+}
+
+/* --- Uploads — docs/15 §7, read by services/uploads/* ------------------- */
+
 /**
  * The upload tunables.
  *

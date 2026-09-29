@@ -1087,25 +1087,120 @@ check(
  * "the check is noisy".
  */
 const attachSource = code('services/uploads/evidence-attach.ts');
-function functionBody(source, signature) {
+
+/**
+ * Extract a function body by brace matching.
+ *
+ * Scoped checks need this, and a `}` inside a string or comment would end the walk
+ * early. That makes the result a LOWER BOUND on the true body rather than an exact
+ * slice — acceptable, because the checks using it either require a small exact count
+ * (an over-long body fails, which is the safe direction) or a substring to be
+ * present (an over-long body cannot hide one).
+ */
+/**
+ * The `{` that opens a function BODY, given the position of its closing `)`.
+ *
+ * **`source.indexOf('{', afterParen)` is wrong whenever the signature has a return
+ * type containing a brace.** `checkForDuplicates` is declared:
+ *
+ *   export async function checkForDuplicates(
+ *     report: DuplicateReportInput,
+ *     cfg: DuplicateConfig = ...,
+ *   ): Promise<DuplicateCheckResult & { readonly candidatesUnavailable: boolean }> {
+ *
+ * so the first `{` after the parameter list is the one inside the RETURN TYPE. The
+ * walk then balanced against a type literal and returned a fragment ending at the
+ * type's `}`, which is why the "applies the exact filter" assertion reported the
+ * filter missing from a function that plainly calls it.
+ *
+ * The fix is to skip a return-type annotation: if the next non-space character is
+ * `:`, consume to the `{` that is followed (after optional whitespace) by a newline
+ * and then a statement. That is a heuristic, so it is applied conservatively — and
+ * the fallback, when the pattern does not match, is the plain first-`{` behaviour
+ * rather than a silent empty body.
+ */
+function findBodyOpen(source, afterParen) {
+  let i = afterParen + 1;
+  while (i < source.length && /\s/.test(source[i])) i += 1;
+
+  // No return type: the `{` must come next.
+  if (source[i] !== ':') return source.indexOf('{', afterParen);
+
+  // A return type: find the LAST `{` before the newline that ends the declaration.
+  let lineEnd = source.indexOf('\n', i);
+  if (lineEnd === -1) lineEnd = source.length;
+  let candidate = -1;
+  for (let j = i; j < lineEnd; j += 1) {
+    if (source[j] === '{') candidate = j;
+  }
+  return candidate === -1 ? source.indexOf('{', afterParen) : candidate;
+}
+
+
+function functionBodyOf(source, signature) {
+  /**
+   * Matched on the function NAME, not the full signature.
+   *
+   * Passing a full parameter list means the check breaks the moment a parameter is
+   * added, reformatted, or given a destructured type — and it breaks SILENTLY,
+   * because `indexOf` returning -1 produced a `''` body and every scoped assertion
+   * on it reported "not found" rather than failing loudly. Two of these checks
+   * failed for exactly that reason during this phase's own bring-up.
+   *
+   * So the caller passes `findDuplicateCandidates` and this function finds the
+   * nearest following `(` to scan for the body.
+   */
   const start = source.indexOf(signature);
   if (start === -1) return '';
-  // Walk braces from the signature's own opening brace. A `}` inside a string or
-  // a comment would end this early, so this is a lower bound on the body rather
-  // than an exact slice — which is fine, because an over-long body can only make
-  // the count HIGHER, and the check fails if the count is not exactly 1.
-  const open = source.indexOf('{', start);
-  let depth = 0;
+
+  /**
+   * The parameter list's closing paren, not the first `{`.
+   *
+   * An earlier version took `source.indexOf('{', start)` — the first brace AFTER the
+   * signature — which for
+   *
+   *   export async function findDuplicateCandidates(
+   *     point: { lat: number; lng: number },
+   *     ...
+   *
+   * is the `{` of the DESTRUCTURED TYPE ANNOTATION, not the body. The walk then
+   * balanced against a parameter type and returned a 28-character fragment, and
+   * every scoped check using it silently saw an empty function.
+   *
+   * That is the worst kind of harness bug: a check that finds nothing, passes for
+   * the wrong reason, and gives false confidence about a real control. Parens are
+   * skipped first, so the brace found is unambiguously the body's.
+   */
+  let parenDepth = 0;
+  let bodyOpen = -1;
+  const open = source.indexOf('(', start);
+  if (open === -1) return '';
   for (let i = open; i < source.length; i += 1) {
+    const c = source[i];
+    if (c === '(') parenDepth += 1;
+    else if (c === ')') {
+      parenDepth -= 1;
+      if (parenDepth === 0) {
+        bodyOpen = findBodyOpen(source, i);
+        break;
+      }
+    }
+  }
+  if (bodyOpen === -1) return '';
+
+  let depth = 0;
+  for (let i = bodyOpen; i < source.length; i += 1) {
     if (source[i] === '{') depth += 1;
     else if (source[i] === '}') {
       depth -= 1;
-      if (depth === 0) return source.slice(open, i + 1);
+      if (depth === 0) return source.slice(bodyOpen, i + 1);
     }
   }
-  return source.slice(open);
+  return source.slice(bodyOpen);
 }
-const readBody = functionBody(attachSource, 'export async function resolveEvidenceRead');
+const functionBody = functionBodyOf;
+
+const readBody = functionBody(attachSource, 'resolveEvidenceRead');
 const refusalConstructions = (
   readBody.match(/new AppError\(\{\s*code: 'MEDIA_NOT_FOUND'/g) ?? []
 ).length;
@@ -1220,6 +1315,457 @@ check(
   'No speech copy claims a responder is on the way (brief §34)',
   dispatchClaims.length === 0,
   dispatchClaims.map(String).join('; '),
+);
+
+/* ========================================================================== */
+/* Phase 6 — maps, geolocation and duplicate detection (docs/12, docs/07 §9)  */
+/* ========================================================================== */
+
+/**
+ * 11. `haversineM` must use the haversine form, not the law of cosines.
+ *
+ * The spherical law of cosines is the textbook formula and it is WRONG for this
+ * use: `acos` of a value within ~1e-10 of 1 loses most of its significant digits,
+ * and two incidents 200 m apart on a 6 371 km sphere are exactly that close. The
+ * haversine form's `sin²(Δφ/2)` stays well-conditioned down to zero, which is why
+ * identical coordinates return exactly `0` rather than floating-point noise.
+ *
+ * The check looks for the `asin(sqrt(h))` shape rather than the absence of `acos`,
+ * so a rewrite that used cosines *and* kept a vestigial asin would still be caught by
+ * the `Math.min(1, ...)` guard check below.
+ */
+const distanceSource = code('lib/geo/distance.ts');
+const usesHaversineShape = /2\s*\*\s*EARTH_RADIUS_M\s*\*\s*Math\.asin\(Math\.sqrt\(/.test(
+  distanceSource.replace(/\s+/g, ' '),
+);
+const usesLawOfCosines = /Math\.acos\(/.test(distanceSource);
+check(
+  'haversineM uses the asin(sqrt(h)) form, not the law of cosines',
+  usesHaversineShape && !usesLawOfCosines,
+  !usesHaversineShape
+    ? 'lib/geo/distance.ts no longer computes 2R*asin(sqrt(h))'
+    : 'lib/geo/distance.ts uses Math.acos, which is ill-conditioned for close points',
+);
+
+/**
+ * 12. The haversine `h` must be clamped to 1.
+ *
+ * Without `Math.min(1, h)`, floating-point can push `h` a hair above 1 and
+ * `Math.asin(1.0000000000000002)` is `NaN` — which turns a valid distance into a
+ * silent NaN and defeats every downstream comparison, including the 500 m radius
+ * gate in the duplicate engine. A `NaN` radius comparison is `false`, so the pair
+ * would be neither confirmed nor rejected.
+ */
+check(
+  'The haversine h is clamped, so a near-antipodal pair cannot yield NaN',
+  /Math\.min\(1,\s*h\)|Math\.min\(1,\s*clamped\)|const clamped = Math\.min\(1, h\)/.test(
+    distanceSource,
+  ),
+  'lib/geo/distance.ts must clamp h to 1 before Math.asin',
+);
+
+/**
+ * 13. `isValidLatLng` must check `Number.isFinite` BEFORE the range test.
+ *
+ * brief §16 requires rejecting `NaN`, `Infinity` and malformed strings. The subtle
+ * part is ORDER: `NaN > 90` and `NaN < -90` are both `false`, so a validator written
+ * as `if (lat > 90 || lat < -90) return null` **ACCEPTS NaN** and stores it in
+ * Firestore, producing a document no map can render and no query can filter.
+ *
+ * The check asserts the finite guard appears before the first range comparison in
+ * the function body, so reordering them is a failure rather than a latent bug.
+ */
+const finiteGuardIndex = distanceSource.indexOf('Number.isFinite(lat)');
+const rangeTestIndex = distanceSource.search(/lat\s*<\s*-90\s*\|\|\s*lat\s*>\s*90/);
+check(
+  'isValidLatLng rejects NaN before testing the range (NaN passes both comparisons)',
+  finiteGuardIndex !== -1 && rangeTestIndex !== -1 && finiteGuardIndex < rangeTestIndex,
+  'the Number.isFinite guard must precede the latitude range test in isValidLatLng',
+);
+
+/**
+ * 14. `buildGeoCells` must use `neighbors()`, and the array must be deduped.
+ *
+ * Two properties, both load-bearing:
+ *
+ *  - **Exact neighbours.** `docs/07 §9.2` describes a ±0.01° offset approximation
+ *    and then says "A safer, fully-correct alternative is to take
+ *    `ngeohash.neighbours(centre)` if the library exposes it." It does — under the
+ *    US spelling. An offset approximation can collapse a neighbour back onto the
+ *    centre near a cell edge, which loses coverage silently.
+ *  - **Deduped.** `docs/12` VP-3 requires deduped and sorted. A duplicate element
+ *    would waste one of the 10 Firestore array slots and misrepresent coverage.
+ *
+ * Sorted is checked too, because an unsorted array makes two points in the same cell
+ * produce different arrays, and cell sets are compared and cached by value.
+ */
+const geohashSource = code('lib/geo/geohash.ts');
+const buildCellsBody = functionBodyOf(geohashSource, 'buildGeoCells');
+
+/**
+ * Scoped to `buildGeoCells`'s own body, because the previous file-wide version
+ * passed for the wrong reason.
+ *
+ * `.sort()` and `new Set<string>(` appear elsewhere in the file — in
+ * `cellsForBounds` and in `cellsOverlap` — so a file-wide presence test stayed green
+ * after `buildGeoCells` was mutated to return an unsorted, undeduped array. Two
+ * mutations confirmed it: disabling the `neighbors()` call, and deleting the
+ * `.sort()`. Neither moved the count.
+ *
+ * This is the same lesson as the `functionBodyOf` brace bug, and the same shape of
+ * failure: a check that looks for a property *somewhere* in a file is not a check
+ * of the function the property belongs to.
+ */
+/**
+ * The `neighbors()` call must be REACHABLE, not merely present.
+ *
+ * A bare presence test passed after the call was disabled with `if (false && ...)`,
+ * because the call expression was still in the source. So the check requires the
+ * guard to be a live conditional on `typeof ngeohash.neighbors === 'function'` —
+ * which is the form that both uses the exact API and keeps a fallback for a version
+ * without it.
+ */
+const usesExactNeighbours = /if\s*\(\s*typeof ngeohash\.neighbors\s*===\s*'function'\s*\)\s*\{[\s\S]{0,400}?ngeohash\.neighbors\(/.test(
+  buildCellsBody,
+);
+const hasFallback = /NEIGHBOUR_OFFSETS/.test(buildCellsBody) && /else\s*\{/.test(buildCellsBody);
+const dedupesAndSorts =
+  /new Set<string>\(/.test(buildCellsBody) && /\[\.\.\.cells\]\.sort\(\)/.test(buildCellsBody);
+check(
+  'buildGeoCells uses ngeohash.neighbors() and returns a deduped, sorted set',
+  buildCellsBody.length > 0 && usesExactNeighbours && hasFallback && dedupesAndSorts,
+  buildCellsBody.length === 0
+    ? 'buildGeoCells not found in lib/geo/geohash.ts'
+    : !usesExactNeighbours
+      ? 'buildGeoCells does not call ngeohash.neighbors()'
+      : !dedupesAndSorts
+        ? 'buildGeoCells does not return [...cells].sort() from a Set'
+        : 'buildGeoCells has no offset fallback for a ngeohash version without neighbors()',
+);
+
+/**
+ * 15. The duplicate candidate search must issue EXACTLY ONE Firestore read.
+ *
+ * `docs/07 §9.2` makes this normative and blunt: "The implementation MUST use one
+ * `array-contains` query on the query point's own geohash-6 and then
+ * Haversine-filter. **Doing 10 would be a 10x read-cost bug.**"
+ *
+ * So the check counts the query-building calls in the candidate function. A loop
+ * over `buildGeoCells(...).forEach(cell => query(...))` — the obvious wrong
+ * implementation, and the one the prohibition exists to prevent — would show up as
+ * more than one `.where(` chain.
+ *
+ * Scoped to the candidate function, not the file: the viewport query legitimately
+ * issues one read PER CELL (up to 9), because `in` cannot be combined with
+ * `array-contains` (`docs/12 §10.2`).
+ */
+const findDuplicatesServiceSource = code('services/geo/find-duplicates.ts');
+const candidateSearchBody = functionBodyOf(findDuplicatesServiceSource, 'findDuplicateCandidates');
+
+/**
+ * **Exactly one** `array-contains` read, and the cell is the QUERY POINT's own.
+ *
+ * `docs/07 §9.2` is normative and blunt about the failure this guards: "The
+ * implementation MUST use one `array-contains` query on the query point's own
+ * geohash-6 and then Haversine-filter. **Doing 10 would be a 10x read-cost bug.**"
+ *
+ * The obvious wrong implementation is a loop over `buildGeoCells(...)` fanning out
+ * one query per cell — 9 reads at `maxCandidates` documents each, billed on every
+ * report. So the count is asserted as exactly 1, and the `limit()` is asserted to be
+ * the configured cap rather than a literal, so a raised cap cannot quietly become a
+ * raised read bill.
+ *
+ * Scoped to the function, because the viewport query legitimately issues one read
+ * PER CELL (up to 9): `in` cannot be combined with `array-contains`
+ * (`docs/12 §10.2`), so that path is N reads by design.
+ */
+const arrayContainsCount = (candidateSearchBody.match(/array-contains/g) ?? []).length;
+const hasSingleLimitFromConfig = /\.limit\(\s*cfg\.maxCandidates\s*\)/.test(candidateSearchBody);
+const hasExactFilterAfter = /classifyDuplicate|findDuplicates/.test(
+  functionBodyOf(findDuplicatesServiceSource, 'checkForDuplicates'),
+);
+check(
+  'The duplicate candidate search is ONE array-contains read, then an exact filter',
+  candidateSearchBody.length > 0 &&
+    arrayContainsCount === 1 &&
+    hasSingleLimitFromConfig &&
+    hasExactFilterAfter,
+  candidateSearchBody.length === 0
+    ? 'findDuplicateCandidates not found'
+    : arrayContainsCount !== 1
+      ? `found ${arrayContainsCount} array-contains reads; docs/07 §9.2 requires exactly 1 (a per-cell fan-out is a 9x read-cost bug)`
+      : !hasSingleLimitFromConfig
+        ? 'the read limit is not the configured maxCandidates'
+        : 'checkForDuplicates does not apply the exact distance filter',
+);
+
+/**
+ * 16. `classifyDuplicate` must be unable to merge, delete, or suppress.
+ *
+ * FR-041 and `docs/07 §9.4` rule 1: "`confirmed_duplicate` is a **suggestion
+ * surfaced to a human**, not an executed merge. The incident is always created."
+ * brief §19 and §27 restate it: proximity is not identity.
+ *
+ * A source-level check cannot prove the absence of every possible merge, so this
+ * checks the two things that would actually be written: that the module imports no
+ * write capability from the Admin SDK, and that no Firestore write method is called
+ * anywhere in `lib/duplicates/` or `services/geo/find-duplicates.ts`.
+ *
+ * `lib/duplicates/` is the pure layer (FR-049 requires no Firestore import at all),
+ * so an import there would be a hard failure; the service may import the Admin SDK
+ * to READ, and this is what distinguishes reading from writing.
+ */
+const duplicateEngineSource = code('lib/duplicates/score.ts');
+const textSimilaritySource = code('lib/duplicates/text.ts');
+const pureLayerImportsFirestore =
+  /from ['"]firebase-admin|from ['"]@\/lib\/server\/firebase-admin/.test(
+    duplicateEngineSource + textSimilaritySource,
+  );
+const writesInGeoServices = (
+  findDuplicatesServiceSource.match(/\.(set|update|add|create|delete|writeBatch|runTransaction)\s*\(/g) ??
+  []
+).length;
+check(
+  'The duplicate engine cannot merge: no Firestore import in the pure layer, no writes in the service',
+  !pureLayerImportsFirestore && writesInGeoServices === 0,
+  pureLayerImportsFirestore
+    ? 'lib/duplicates/ imports Firestore, which FR-049 forbids for the pure layer'
+    : `${writesInGeoServices} Firestore write call(s) in services/geo/find-duplicates.ts`,
+);
+
+/**
+ * 17. A client-supplied `geoCells` must be a 400, not a silently-ignored field.
+ *
+ * `docs/12` GEO-3, FR-036: "Computed **server-side only**. A client-supplied
+ * `geoCells` is rejected by the Zod schema (`.strict()`)."
+ *
+ * The threat is specific: a client that could choose its own cells would choose
+ * cells matching nothing (hiding its incident from every map and duplicate query) or
+ * cells matching a dense cluster of unrelated incidents (flooding every viewport
+ * query in that area). `.strict()` is what makes the extra field a rejection rather
+ * than a no-op, so the check requires BOTH `.strict()` on the geo schema AND the
+ * absence of `geoCells` from its accepted shape.
+ */
+const geoValidatorSource = code('validators/geo.ts');
+const geoSchemaIsStrict = /\.strict\(\)/.test(geoValidatorSource);
+const geoCellsNotInClientShape =
+  !/geoInputSchema[\s\S]{0,900}?geoCells:/.test(geoValidatorSource) ||
+  /server-side only|server-side path and for tests/.test(geoValidatorSource);
+check(
+  'geoCells is server-computed only: the client geo schema is .strict() and has no geoCells field',
+  geoSchemaIsStrict && geoCellsNotInClientShape,
+  !geoSchemaIsStrict
+    ? 'validators/geo.ts has no .strict(), so a client geoCells would be ignored'
+    : 'the client geo schema appears to accept a geoCells field',
+);
+
+/**
+ * 18. `categoryGroup` must not inherit from `Object.prototype`.
+ *
+ * A bare `CATEGORY_GROUPS[category]` on an object literal finds `constructor`,
+ * `toString` and every other inherited member, so `categoryGroup('toString')`
+ * returned a **function**. Two unmapped categories would then compare EQUAL and two
+ * unrelated incidents would be reported as the same group — the opposite of
+ * Gate 2's purpose.
+ *
+ * This is the same class of bug as a prototype-pollution lookup, reached through
+ * ordinary data: a category string arriving from AI triage normalisation is an
+ * arbitrary string, and "firelight" style inputs are not contrived.
+ */
+check(
+  'categoryGroup uses an own-property check, not an inherited lookup',
+  /Object\.hasOwn\(\s*CATEGORY_GROUPS/.test(duplicateEngineSource),
+  'lib/duplicates/score.ts must use Object.hasOwn(CATEGORY_GROUPS, category)',
+);
+
+/**
+ * 19. The `category_mismatch` branch must set a decision, not only reasons.
+ *
+ * `docs/07 §9.4` Gate 2 makes a same-spot/different-category pair
+ * `separate_incident`, and `docs/12` FR-048 wants the decision explainable.
+ *
+ * This shipped once spreading a `base` object whose `decision` was `'none'` while
+ * overriding only `reasons` — so a road accident beside a building fire was
+ * filtered out by `findDuplicates` exactly as if it were 3 km away, and a dispatcher
+ * was never told the two were considered and rejected. Asserted structurally.
+ */
+const gate2Branch = /!\s*exactCategory\s*&&\s*!sameGroup\s*\)\s*\{[\s\S]{0,600}?decision:\s*'separate_incident'/.test(
+  duplicateEngineSource,
+);
+check(
+  'A category mismatch sets decision: separate_incident, not merely a reason',
+  gate2Branch,
+  'the Gate 2 early return must set decision explicitly, not inherit none from base',
+);
+
+/**
+ * 20. The scoring weights must still sum to 1.
+ *
+ * `potentialThreshold` (0.55) is an ABSOLUTE score, not a percentile, so a weight
+ * edit that does not renormalise silently changes what the threshold means. The same
+ * reasoning as the unit test, asserted here as well because a threshold that drifts
+ * is a policy change nobody reviewed.
+ */
+const weightSum = [0.35, 0.1, 0.25, 0.3].reduce((a, b) => a + b, 0);
+check(
+  'The duplicate scoring weights sum to 1.0, so the thresholds keep their meaning',
+  Math.abs(weightSum - 1) < 1e-9 &&
+    /DUPLICATE_WEIGHTS\s*=\s*\{[\s\S]{0,300}?distance:\s*0\.35[\s\S]{0,300}?time:\s*0\.1[\s\S]{0,300}?category:\s*0\.25[\s\S]{0,300}?text:\s*0\.3/.test(
+      duplicateEngineSource,
+    ),
+  'lib/duplicates/score.ts weights are not the docs/07 §9.4 values (0.35/0.10/0.25/0.30)',
+);
+
+/**
+ * 21. The duplicate radius and time window must be ENV-configurable, not literals.
+ *
+ * brief §18: "Implement duplicate detection around a configurable radius:
+ * `DUPLICATE_RADIUS_METERS=500`. **Do NOT hardcode 500 throughout the
+ * application.**" brief §22 does the same for the time window.
+ *
+ * So both must be read from the environment in exactly one place, and both must be
+ * declared in `.env.example` so a deployer can find them.
+ */
+const envServerSource = code('lib/env.server.ts');
+const radiusIsEnv =
+  /tunableNumber\(\s*'DUPLICATE_RADIUS_METERS'/.test(envServerSource) &&
+  /tunableNumber\(\s*'DUPLICATE_LOOKBACK_HOURS'/.test(envServerSource);
+const envExampleDeclares =
+  envExample.includes('DUPLICATE_RADIUS_METERS=') && envExample.includes('DUPLICATE_LOOKBACK_HOURS=');
+check(
+  'The duplicate radius and time window are env-configurable and declared in .env.example',
+  radiusIsEnv && envExampleDeclares,
+  !radiusIsEnv
+    ? "lib/env.server.ts does not read DUPLICATE_RADIUS_METERS / DUPLICATE_LOOKBACK_HOURS"
+    : '.env.example does not declare both variables',
+);
+
+/**
+ * 22. An auto-prompt on load is forbidden, and the copy must not be coercive.
+ *
+ * `docs/12 §3.5` + FR-030. The failure is not politeness: Chrome remembers a
+ * refusal, so a load-time prompt converts "the user said no this once" into "the
+ * user can never say yes", and the fallback path becomes the only path forever.
+ *
+ * The second half is brief §5's ban on manipulative permission messaging. The
+ * explainer must state the benefit and must not use urgency or consequence language.
+ */
+const geolocationSource = code('features/reporting/use-geolocation.ts');
+
+/**
+ * No `request()` call from an EFFECT body, at any nesting depth.
+ *
+ * `docs/12 §3.5` + FR-030: an auto-prompt on load is forbidden, and the reason is
+ * measurement rather than politeness — Chrome remembers a refusal, so a load-time
+ * prompt turns "the user said no this once" into "the user can never say yes" and
+ * the fallback path becomes the only path for every future session.
+ *
+ * The first version of this check matched a fixed-shape regex
+ * (`useEffect(() => { request()`) and did not bite when the call was moved one line
+ * down. So this counts the effect bodies and requires that NONE of them contains a
+ * `request()` call — which is the actual invariant, stated as a property of every
+ * effect rather than as a pattern to be evaded.
+ */
+const effectBodies = [
+  ...geolocationSource.matchAll(/(?:React\s*\.\s*)?useEffect\s*\(\s*(?:async\s*)?\(\s*\)\s*=>/g),
+].map((match) => {
+  // Balance from the opening brace of the arrow body.
+  let depth = 0;
+  const open = geolocationSource.indexOf('{', match.index + match[0].length - 1);
+  if (open === -1) return '';
+  for (let i = open; i < geolocationSource.length; i += 1) {
+    if (geolocationSource[i] === '{') depth += 1;
+    else if (geolocationSource[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return geolocationSource.slice(open, i + 1);
+    }
+  }
+  return '';
+});
+const effectsCallingRequest = effectBodies.filter((body) => /(?<![.\w])request\s*\(\s*\)/.test(body));
+const noAutoPrompt = effectBodies.length > 0 && effectsCallingRequest.length === 0;
+const coercivePatterns = [
+  /people will die/i,
+  /lives? (are|is) at stake/i,
+  /you must (allow|enable|share)/i,
+  /\brequired\b/i,
+  /emergency services (need|require)/i,
+];
+const coerciveCopy = coercivePatterns.filter((pattern) => pattern.test(geolocationSource));
+check(
+  'Geolocation is never auto-prompted, and the explainer is not coercive (FR-030, brief §5)',
+  noAutoPrompt && coerciveCopy.length === 0,
+  effectBodies.length === 0
+    ? 'no useEffect found in use-geolocation.ts, so the auto-prompt check could not run'
+    : effectsCallingRequest.length > 0
+      ? 'a useEffect calls request() — docs/12 §3.5 forbids an auto-prompt on load'
+      : coerciveCopy.map(String).join('; '),
+);
+
+/**
+ * 23. No geolocation copy may claim a responder is coming — brief §34.
+ *
+ * Enforced as a check as well as a test, for the same reason the speech copy is:
+ * "emergency services have been notified" is the single most damaging string this
+ * product could render, and it is exactly the kind of sentence someone adds to make
+ * a flow feel reassuring.
+ */
+const geoCopyClaim = [
+  /emergency services (have|has) been notified/i,
+  /help is on the way/i,
+  /responders? (have|has) been dispatched/i,
+  /we('ve| have) (located|found) you/i,
+].filter((pattern) => pattern.test(geolocationSource));
+check(
+  'No geolocation copy claims a responder is on the way (brief §34)',
+  geoCopyClaim.length === 0,
+  geoCopyClaim.map(String).join('; '),
+);
+
+/**
+ * 24. `ngeohash` must be typed, not `any`.
+ *
+ * `types/ngeohash.d.ts` exists because the package ships no types, and the
+ * alternative — `declare module 'ngeohash';` — makes every import `any` and
+ * silently disables checking at the boundary where a mistake is most expensive.
+ *
+ * That is not theoretical. The first `decode()` call was written against an assumed
+ * `{ lat, lng }` shape when the real one is `{ latitude, longitude }`. With `any`
+ * that compiles, runs, and `clampLatitude(undefined)` yields `0` — so every geohash
+ * cell would be encoded at the equator and **no incident would ever match a
+ * viewport query**. A typed declaration rejects the destructure at compile time.
+ */
+const ngeohashTypesPath = join(ROOT, 'types/ngeohash.d.ts');
+const ngeohashTypesExist = existsSync(ngeohashTypesPath);
+const ngeohashTypes = ngeohashTypesExist ? readFileSync(ngeohashTypesPath, 'utf8') : '';
+
+/**
+ * A bare `declare module 'ngeohash';` has NO braces.
+ *
+ * The naive `/declare module 'ngeohash'\s*;/` test matched this project's own
+ * *good* declaration, because the phrase appears inside the doc comment explaining
+ * why that form is avoided — "The usual shortcut — `declare module 'ngeohash';` —
+ * makes every import `any`". Matching prose is how a check reports a false FAIL and
+ * trains its reader to ignore it.
+ *
+ * So the test is structural: strip comments, then require an opening brace. A
+ * shorthand ambient module genuinely has no body, and this one has an interface, an
+ * encode signature and a decode signature inside it.
+ */
+const ngeohashCodeOnly = ngeohashTypes.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+const notBareAny =
+  ngeohashTypesExist && /declare module 'ngeohash'\s*\{/.test(ngeohashCodeOnly);
+const decodeShapeIsTyped =
+  ngeohashTypesExist &&
+  /readonly latitude: number;[\s\S]{0,120}?readonly longitude: number;/.test(ngeohashCodeOnly);
+check(
+  'ngeohash is typed with the real decode() shape, not a bare any declaration',
+  notBareAny && decodeShapeIsTyped,
+  !ngeohashTypesExist
+    ? 'types/ngeohash.d.ts is missing — the import is untyped'
+    : !decodeShapeIsTyped
+      ? 'the declaration does not type decode() as { latitude, longitude }'
+      : 'types/ngeohash.d.ts is a bare `declare module` and makes the import any',
 );
 
 /* ------------------------------------------------------------------------ */

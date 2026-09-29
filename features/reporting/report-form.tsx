@@ -341,6 +341,12 @@ export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
                 method={draft.locationMethod}
                 onChange={setLocation}
               />
+              {/* Phase 6. `useLocation` is wired in here but its panel is NOT
+                  rendered yet — see `docs/30.7 §9`. The Phase 1 `LocationPanel` above
+                  is the static, non-functional placeholder and stays in place so
+                  Phase 1-3 behaviour and tests are untouched. The hook is exercised
+                  by `tests/unit/geo/use-location.test.ts` through its pure
+                  resolution logic. */}
             </CardContent>
           </Card>
 
