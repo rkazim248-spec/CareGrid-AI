@@ -372,7 +372,23 @@ export type AnalyticsRange = {
   advisory: string | null;
 };
 
+/**
+ * A metric that may be UNMEASURABLE.
+ *
+ * `docs/14 §2.1`: "A metric whose inputs are absent is **`null`**, never `0`. `0`
+ * asserts 'we measured zero'; `null` asserts 'we could not measure this'." brief
+ * §30 says the same: "Never fabricate values."
+ *
+ * This alias is what makes that distinction expressible. Phase 3 typed every total
+ * as `number`, which meant a duration computed from zero qualifying records had to
+ * be *some* number — and `0` would have read on a dispatcher's screen as "resolved
+ * instantly", which is the opposite of the truth.
+ */
+export type MaybeNumber = number | null;
+
 export type AnalyticsTotals = {
+  // Counts are never nullable: a count of zero is a real measurement of a window
+  // with nothing in it.
   total: number;
   active: number;
   critical: number;
@@ -382,14 +398,22 @@ export type AnalyticsTotals = {
   resolved: number;
   cancelled: number;
   falseAlarm: number;
-  meanTimeToVerifySec: number;
-  meanTimeToDispatchSec: number;
-  meanTimeToResolveSec: number;
-  slaCompliancePct: number;
-  duplicateRatePct: number;
-  aiFallbackRatePct: number;
-  meanAiConfidence: number;
-  reportsPerIncident: number;
+  /** Nullable: `null` when no incident in the period was verified. `docs/14 §2.3`. */
+  meanTimeToVerifySec: MaybeNumber;
+  /** Nullable: `null` when no incident in the period was dispatched. */
+  meanTimeToDispatchSec: MaybeNumber;
+  /** Nullable: `null` when no incident in the period was resolved. */
+  meanTimeToResolveSec: MaybeNumber;
+  /** Nullable: `null` when the period is empty. `docs/14 §2.4`. */
+  slaCompliancePct: MaybeNumber;
+  /** Nullable: `null` when `sum(reportCount) == 0`. */
+  duplicateRatePct: MaybeNumber;
+  /** Nullable: `null` when `total == 0`. */
+  aiFallbackRatePct: MaybeNumber;
+  /** Nullable: `null` when `total == 0`. */
+  meanAiConfidence: MaybeNumber;
+  /** Nullable: `null` when `total == 0`. */
+  reportsPerIncident: MaybeNumber;
 };
 
 export type Analytics = {

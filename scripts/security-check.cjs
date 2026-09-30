@@ -2676,6 +2676,541 @@ check(
   clientSystemActors.join('; '),
 );
 
+/* ------------------------------------------------------------------------ */
+/* Phase 9 — notifications + operational analytics                            */
+/* ------------------------------------------------------------------------ */
+/*
+ * Phase 9's two rules that matter are both about CLAIMS rather than about access:
+ *
+ *  - a notification must reach only its intended recipient, and
+ *  - an analytics surface must never present a heuristic as a forecast, or an
+ *    unmeasurable metric as a number.
+ *
+ * Both are checkable structurally, and both are the kind of thing that a
+ * well-meaning copy edit reverts. `docs/14 §6.8` says the honesty statement is
+ * "Rendered verbatim, not paraphrased" — which is only enforceable if something
+ * asserts the exact string is present.
+ */
+
+const metricsSource = read('lib/analytics/metrics.ts');
+const riskSource = read('lib/analytics/risk-score.ts');
+const decideSource = read('lib/analytics/decide-source.ts');
+const analyticsConfig = read('config/analytics.ts');
+const analyticsTime = read('lib/analytics/time.ts');
+const l5Hook = read('features/notifications/use-realtime-notifications.ts');
+const queriesSource9 = read('lib/firestore/queries.ts');
+const kpiGrid = read('features/analytics/kpi-grid.tsx');
+const analyticsView = read('features/analytics/analytics-view.tsx');
+const riskSection = read('features/analytics/risk-section.tsx');
+const enumsSource9 = read('types/enums.ts');
+const rules9 = read('firestore.rules');
+const indexesJson9 = read('firestore.indexes.json');
+
+function codeOnly9(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+/**
+ * 57. `docs/14 §2.1`: an unmeasurable metric is `null`, never `0`.
+ *
+ * The single most consequential convention in the analytics spec, and the one
+ * brief §30 restates. Asserted on the PRIMITIVES rather than on the assembled
+ * object, because the primitives are what a future metric would be built from — an
+ * aggregate can be honest while the helpers it calls are not.
+ */
+const nullPrimitives =
+  /export function mean\([\s\S]{0,200}?if \(values\.length === 0\) return null;/.test(metricsSource) &&
+  /export function ratePct\([\s\S]{0,200}?if \(denominator === 0\) return null;/.test(metricsSource) &&
+  /export function durationSec\([\s\S]{0,240}?if \(fromMs === null \|\| toMs === null\) return null;/.test(
+    metricsSource,
+  );
+/** And the negative-duration guard, which is the subtle one. */
+const negativeDurationIsNull =
+  /return seconds < 0 \? null : seconds;/.test(metricsSource);
+check(
+  'Every analytics primitive returns null for an unmeasurable input, never 0 (docs/14 §2.1, brief §30)',
+  nullPrimitives && negativeDurationIsNull,
+  !nullPrimitives
+    ? 'a primitive (mean / ratePct / durationSec) returns 0 or throws for an empty input'
+    : 'a negative duration is returned as a number rather than null — host clock skew would become an ops metric',
+);
+
+/**
+ * 58. The totals TYPE admits null, so §2.1 is expressible.
+ *
+ * Before Phase 9, `AnalyticsTotals` typed every duration and rate as `number`. That
+ * made the rule above unimplementable: a duration computed from zero qualifying
+ * records had to be *some* number. The type is the control, so it is asserted.
+ */
+const totalsAdmitsNull =
+  /meanTimeToDispatchSec: MaybeNumber;/.test(read('types/domain.ts')) &&
+  /slaCompliancePct: MaybeNumber;/.test(read('types/domain.ts')) &&
+  /export type MaybeNumber = number \| null;/.test(read('types/domain.ts'));
+check(
+  'AnalyticsTotals admits null for durations and rates, and only for those (docs/14 §2.1)',
+  totalsAdmitsNull,
+  !totalsAdmitsNull ? 'a duration or rate is still typed `number`, so "not enough data" cannot be rendered' : '',
+);
+
+/**
+ * 59. The UI renders "not enough data" rather than a number for a null.
+ *
+ * A null in the type that reaches a tile as `0s` satisfies the type and defeats the
+ * rule. This asserts the RENDERING, which is the part §2.1 actually protects.
+ */
+const rendersNoData = /export const NO_DATA = 'Not enough data';/.test(kpiGrid);
+const durationUsesTheHelper = /formatMetricDuration\(totals\.meanTimeToDispatchSec\)/.test(kpiGrid);
+const percentUsesTheHelper = /formatMetricPercent\(totals\.slaCompliancePct\)/.test(kpiGrid);
+const nullIsNotABreach = /return value === null \? 'default' : value < 90 \? 'breached' : 'default';/.test(
+  kpiGrid,
+);
+check(
+  'The KPI grid renders "Not enough data" for a null, and never shows an SLA breach for missing data',
+  rendersNoData && durationUsesTheHelper && percentUsesTheHelper && nullIsNotABreach,
+  !rendersNoData
+    ? 'kpi-grid has no NO_DATA constant'
+    : !durationUsesTheHelper || !percentUsesTheHelper
+      ? 'a nullable metric is still passed straight to formatDuration/formatPercent'
+      : 'a null SLA value renders as a BREACH — a red tile for the absence of data',
+);
+
+/**
+ * 60. brief §2 and §20: the risk score has no input a prediction could enter.
+ *
+ * Structural rather than textual. The concern is that a future developer adds a
+ * `forecast` or `population` field, and the assertion is that the TYPE has no room
+ * for one — which is why the check reads the exported shape.
+ */
+const riskInputFields = (riskSource.match(/export type RiskZoneInput = \{([\s\S]*?)\n\};/) ?? ['', ''])[1];
+const riskFields = riskInputFields
+  .split('\n')
+  // `\w+\??:` — the `?` is REQUIRED in the pattern. The first version used
+  // `\w+:` and a mutation adding `readonly forecastProbability?: number` was
+  // invisible to it, so the check passed for a field it could not see. An
+  // optional property is exactly the shape a new field would take.
+  .map((line) => /readonly (\w+)\??\s*:/.exec(line)?.[1])
+  .filter(Boolean)
+  .sort();
+
+/** The six facts a score may be computed from, and nothing else. */
+const HISTORICAL_ONLY = [
+  'criticalCount',
+  'daysSinceLastIncident',
+  'highCount',
+  'incidentCount',
+  'mediumCount',
+  'windowDays',
+].sort();
+const allHistorical = riskFields.length === HISTORICAL_ONLY.length &&
+  HISTORICAL_ONLY.every((name) => riskFields.includes(name));
+/** And no field may be named as a prediction, whatever its type. */
+const PREDICTIVE_NAME = /forecast|predict|probab|population|weather|season|dayOfWeek|model|forecasted/i;
+const predictiveField = riskFields.find((name) => PREDICTIVE_NAME.test(name)) ?? null;
+check(
+  'RiskZoneInput holds only historical facts — no field a forecast could enter (brief §2, docs/14 §6)',
+  allHistorical && predictiveField === null,
+  predictiveField !== null
+    ? 'RiskZoneInput declares ' + predictiveField + ' - a predictive field is indistinguishable from a historical one, and docs/14 6 forbids it'
+    : 'RiskZoneInput is ' + JSON.stringify(riskFields) + ' — expected exactly the six historical facts',
+);
+
+/**
+ * 61. `docs/14 §6.8`: the honesty statement is present and VERBATIM.
+ *
+ * A paraphrased statement is the failure the section forbids, and paraphrasing is
+ * exactly what happens when someone tightens the prose. Asserting the opening
+ * clause and the three named limits is what makes "not paraphrased" enforceable.
+ */
+const honestyPresent = /RISK_HONESTY_STATEMENT\s*=\s*\n?\s*'This is a summary of past incidents, not a forecast\./.test(
+  analyticsConfig,
+);
+const honestyLimits = /does not know the population/.test(analyticsConfig) &&
+  /the weather/.test(analyticsConfig) &&
+  /never where to send/.test(analyticsConfig);
+check(
+  'The risk honesty statement is declared and matches docs/14 §6.8 verbatim',
+  honestyPresent && honestyLimits,
+  !honestyPresent
+    ? "the statement does not open with docs/14 §6.8's verbatim first sentence"
+    : 'the statement has lost one of the three limits docs/14 §6.8 names',
+);
+
+/**
+ * 62. No component claims the analytics predict.
+ *
+ * brief §20: "Avoid wording such as 'This area will be dangerous', 'AI predicts an
+ * accident here', 'Guaranteed high-risk zone'."
+ *
+ * Scanned over the ANALYTICS COMPONENTS specifically. The check would be useless
+ * over the whole tree, because the forbidden phrases appear in the config module —
+ * that is where they are defined so a check can look for them.
+ */
+const forbiddenClaims = [
+  /will be dangerous/i,
+  /predicts an accident/i,
+  /guaranteed high-risk/i,
+  /AI predicts/i,
+  /is going to happen/i,
+  /likely to have an incident/i,
+];
+/**
+ * Scanned over the ANALYTICS COMPONENTS specifically, and AFTER comment
+ * stripping. A mutation test that appended a forbidden phrase to the first
+ * occurrence of `RiskSection` landed inside that symbol's JSDoc block and was
+ * stripped before the scan — so the first run of that mutation reported a MISS
+ * that was really a bad mutation. Comments are where a prohibition gets
+ * *described*, which is exactly why they must be removed before scanning.
+ */
+const claimViolations = [];
+for (const [name, source] of [
+  ['risk-section.tsx', riskSection],
+  ['kpi-grid.tsx', kpiGrid],
+  ['analytics-view.tsx', analyticsView],
+]) {
+  const code = codeOnly9(source);
+  for (const pattern of forbiddenClaims) {
+    if (pattern.test(code)) claimViolations.push(`${name}: ${pattern}`);
+  }
+}
+check(
+  'No analytics component claims to predict future danger (brief §2, §20; docs/14 §6)',
+  claimViolations.length === 0,
+  claimViolations.join('; '),
+);
+
+/**
+ * 63. Risk zones are DISABLED by default.
+ *
+ * `docs/14 §6.1`: "Feature flag | `ENABLE_RISK_ZONES` / `config.features.riskZones`,
+ * **default `false`** (P1)".
+ *
+ * Phase 9 implements the computation and does NOT flip the flag. A density heatmap
+ * enabled by default is the most over-claimable surface in the product, and
+ * `docs/14` marked it P1 for that reason.
+ */
+const riskDisabled = /export const RISK_ZONES_ENABLED = false;/.test(analyticsConfig);
+check(
+  'Risk zones are disabled by default, per docs/14 §6.1 (P1)',
+  riskDisabled,
+  riskDisabled ? '' : 'RISK_ZONES_ENABLED is not false — the flag was flipped without a documented decision',
+);
+
+/**
+ * 64. FR-116: the rollup decision keys on the END of the range, at 48 h.
+ *
+ * `docs/14 §3.2`. A rule keyed on the range START would send a 90-day view ending
+ * today to 90 rollup documents and show a dispatcher data that is up to 48 hours
+ * stale, while the two most recent days in their own window were available live.
+ */
+const usesEndOfDay = /endOfLocalDayMs\(to, timezone\)|endOfLocalDayMs\(input\.to, input\.timezone\)/.test(
+  decideSource,
+);
+const fortyEight = /export const ROLLUP_AFTER_HOURS = 48;/.test(decideSource);
+check(
+  'decideSource keys on the END of the range at 48 h, not the start (docs/14 §3.2, FR-116)',
+  usesEndOfDay && fortyEight,
+  !usesEndOfDay ? 'the rule does not read the range END' : 'the 48 h threshold is not the documented value',
+);
+
+/**
+ * 65. Day boundaries are LOCAL.
+ *
+ * `new Date('2026-09-26')` is UTC midnight, which in Asia/Kolkata is 05:30 into
+ * the day — so the last incident of the previous evening would be counted in the
+ * wrong bucket. The assertion is that the module resolves an offset through
+ * `Intl` rather than using a `Date` constructor on a bare date string.
+ */
+const localBoundary = /offsetMinutesAt/.test(analyticsTime) &&
+  /Intl\.DateTimeFormat/.test(analyticsTime) &&
+  // No bare `Date.parse(\`${date}T00:00:00Z\`)` used as THE boundary.
+  /startOfLocalDayMs/.test(analyticsTime);
+check(
+  'Local day boundaries are resolved through Intl, not a UTC date parse (docs/14 §7.1)',
+  localBoundary,
+  localBoundary ? '' : 'the timezone conversion is missing, so day buckets would be offset from local midnight',
+);
+
+/**
+ * 66. The `active` status set is the SIX docs/14 names, and the buckets are disjoint.
+ *
+ * The naming collision this guards: `docs/07 §12.1` calls a SEVEN-element set
+ * `ACTIVE_STATUSES` (with `resolved`), while `docs/11 §2.1` and `docs/14 §2.1` call
+ * the SIX-element subset `ACTIVE_STATUSES` and name the seven `OPEN_STATUSES`.
+ *
+ * Reading `types/enums.ts`'s array by `docs/14`'s meaning put every resolved
+ * incident in BOTH `counts.active` and `counts.resolved` — and, in Phase 8, put
+ * resolved incidents back in the dispatcher's live work queue. A unit test's
+ * disjointness assertion is what found it; this makes the fix permanent.
+ */
+const liveActiveIsSix = /export const LIVE_ACTIVE_STATUSES = \[[\s\S]{0,200}?\] as const/.test(
+  read('lib/collections/enums.ts'),
+);
+const analyticsUsesSix = /ANALYTICS_ACTIVE_STATUSES/.test(metricsSource);
+const queueUsesSix = /QUEUE_STATUS_WINDOW: readonly IncidentStatus\[\] = \[\.\.\.LIVE_ACTIVE_STATUSES\]/.test(
+  read('lib/collections/enums.ts'),
+);
+const openStatusesIsSeven = /OPEN_STATUSES = \[[\s\S]{0,300}?'resolved',[\s\S]{0,40}?\] as const/.test(
+  read('lib/collections/enums.ts'),
+);
+check(
+  'The six-element active set is distinct from the seven-element open set, and both metrics and the queue use the six',
+  liveActiveIsSix && analyticsUsesSix && queueUsesSix && openStatusesIsSeven,
+  !analyticsUsesSix
+    ? "analytics uses a set that may include 'resolved', double-counting it against counts.resolved"
+    : !queueUsesSix
+      ? "the live queue window may include 'resolved', putting a finished incident back in the work queue"
+      : !openStatusesIsSeven
+        ? 'OPEN_STATUSES is not the documented 7-element set'
+        : '',
+);
+
+/**
+ * 67. SEC-4, restated for the hook: L5 has no parameter to widen it.
+ *
+ * Phase 8 asserted the QUERY function's parameter count. This asserts the HOOK,
+ * because a hook is where a future developer would be tempted to add a filter —
+ * `useRealtimeNotifications({ recipientUid })` is the obvious mistake, and it is
+ * one that would compile.
+ */
+/**
+ * The property names the hook declares in its single options object type.
+ *
+ * The first version of this check asserted the signature STARTED WITH a
+ * particular prefix — `useRealtimeNotifications(options: { readonly seed?` — and a
+ * mutation that appended `readonly recipientUid?: string` after `seed?` did not
+ * break it. **A prefix test cannot detect an addition**, so the check passed for
+ * the wrong reason. Asserting the SET of declared properties is the property that
+ * actually matters: one option, and it is the seed.
+ */
+function l5OptionNames(source) {
+  const signature = /export function useRealtimeNotifications\(options: \{([\s\S]*?)\}/.exec(source);
+  if (signature === null) return null;
+  return [...signature[1].matchAll(/(\w+)\??\s*:/g)].map((m) => m[1]).sort();
+}
+
+const l5Options = l5OptionNames(l5Hook);
+const l5HasNoSelector = l5Options !== null && l5Options.length === 1 && l5Options[0] === 'seed';
+const l5QueryIsTwoArgs = /notificationQuery\(db, uid as string\)/.test(l5Hook);
+/** And nothing anywhere in the hook carries a recipient-shaped identifier. */
+const l5MentionsNoRecipient =
+  !/recipientUid|recipientId|targetUid|forUid|userFilter/.test(codeOnly9(l5Hook));
+check(
+  'useRealtimeNotifications declares only a seed option and cannot widen L5 (docs/11 §11.3 SEC-4)',
+  l5HasNoSelector && l5QueryIsTwoArgs && l5MentionsNoRecipient,
+  l5Options === null
+    ? 'the hook signature was not found'
+    : !l5HasNoSelector
+      ? `the hook declares ${JSON.stringify(l5Options)} — expected exactly ["seed"]`
+      : !l5MentionsNoRecipient
+        ? 'the hook carries a recipient-shaped identifier — a notification is targeted correspondence about one user'
+        : '',
+);
+
+/**
+ * 68. Notification types are the declared 12, not free strings.
+ *
+ * brief §4: "Do not allow arbitrary client-provided notification types. Validate
+ * notification type server-side."
+ *
+ * The check is that the client reads the SAME declared set rather than
+ * restating it — a restated list is how the three-vocabulary bug in the incident
+ * row mapper happened, where a real `duplicateStatus` read as absent.
+ */
+const declaredTypes = (enumsSource9.match(/export const NOTIFICATION_TYPES = \[([\s\S]*?)\] as const/) ?? [
+  '',
+  '',
+])[1]
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+/**
+ * The mapper must DERIVE the set from the declared enum, not restate it.
+ *
+ * The first version of the hook listed the twelve by hand, and this check caught
+ * that a restated list is a correctness risk rather than a style one: the same
+ * mistake in the incident row mapper silently dropped a real `duplicateStatus`
+ * because the restated value did not match the enum, and here an unrecognised type
+ * degrades to a neutral badge — so a real "incident assigned" would render as
+ * generic. Asserting the DERIVE is what makes the class of bug impossible.
+ */
+const derivesFromEnum = /new Set<string>\(NOTIFICATION_TYPES\)/.test(l5Hook);
+check(
+  'The notification row mapper derives its type set from NOTIFICATION_TYPES, not a restated list (brief §4)',
+  declaredTypes.length === 12 && derivesFromEnum,
+  declaredTypes.length !== 12
+    ? `docs/07 §10.2 should declare 12 notification types; found ${declaredTypes.length}`
+    : 'the mapper restates the type list instead of deriving it from the enum',
+);
+
+/**
+ * 69. `notifications` ownership is enforced in the RULES, not only in the query.
+ *
+ * brief §11: "users can only read their own notifications; users cannot modify
+ * another user's notification". The query is a convenience; the rule is the
+ * boundary, and a client that could bypass the query would still be refused.
+ */
+const rulesScopedToRecipient =
+  /match \/notifications\/\{notificationId\}/.test(rules9) &&
+  /resource\.data\.recipientUid == request\.auth\.uid/.test(rules9);
+const rulesWriteIsRefused = /allow create, delete: if false;/.test(rules9);
+const rulesReadOnlyIsScoped =
+  /request\.resource\.data\.diff\(resource\.data\)\.affectedKeys\(\)[\s\S]{0,120}?hasOnly\(\['read', 'readAt', 'updatedAt'\]\)/.test(
+    rules9,
+  );
+check(
+  'notifications are owner-scoped in the rules, and the only client write is read/readAt (docs/11 §11.3 SEC-5, brief §11)',
+  rulesScopedToRecipient && rulesWriteIsRefused && rulesReadOnlyIsScoped,
+  !rulesScopedToRecipient
+    ? 'the notifications rule does not scope reads to recipientUid'
+    : !rulesWriteIsRefused
+      ? 'a client can create or delete a notification'
+      : 'the read-marking write is not restricted to read/readAt/updatedAt',
+);
+
+/**
+ * 70. `analyticsDaily` and `riskZones` are never READ by a client listener.
+ *
+ * `docs/14 §1`: risk zones are "**never** recomputed on read" and are
+ * precomputed. `docs/11 §2.4` lists `analyticsDaily` and `riskZones` under "What is
+ * never listened to": "Historical / precomputed. FR-099 forbids listeners for
+ * historical or archived analytics queries."
+ *
+ * So a listener over either collection would be a client recomputing a precomputed
+ * document — which is the specific thing both documents forbid.
+ */
+const queryBuilderCollections = (queriesSource9.match(/COLLECTIONS\.(\w+)/g) ?? []).map((m) =>
+  m.replace('COLLECTIONS.', ''),
+);
+const listensToRollups = queryBuilderCollections.some((c) => c === 'analyticsDaily' || c === 'riskZones');
+check(
+  'No listener query reads analyticsDaily or riskZones (docs/14 §1, docs/11 §2.4, FR-099)',
+  !listensToRollups,
+  listensToRollups ? 'a query builder reads ' + queryBuilderCollections.join(', ') : '',
+);
+
+/**
+ * 71. The analytics read is bounded, and a capped scan reports it.
+ *
+ * `docs/14 §1` lists "Present a capped live scan as complete" as the thing
+ * operational analytics must never do, and `docs/14 §8.3` requires the cap to
+ * exist. `LIVE_SCAN_CAP` must be a number and `AnalyticsRange.truncated`-bearing
+ * `advisory` must be part of the response type.
+ */
+const liveCapBounded = /export const LIVE_SCAN_CAP = \d+;/.test(analyticsConfig);
+const rangeCarriesAdvisory = /advisory: string \| null;/.test(read('types/domain.ts'));
+const rangeCarriesSource = /source: 'rollup' \| 'live';/.test(read('types/domain.ts'));
+check(
+  'The live scan is capped, and the response carries source + advisory so a capped scan is not presented as complete (docs/14 §1, §8.3)',
+  liveCapBounded && rangeCarriesAdvisory && rangeCarriesSource,
+  !liveCapBounded
+    ? 'LIVE_SCAN_CAP is not a declared number'
+    : !rangeCarriesAdvisory
+      ? 'AnalyticsRange has no `advisory`, so a truncated scan cannot say so'
+      : 'AnalyticsRange has no `source`, so a rollup and a live scan are indistinguishable',
+);
+
+/**
+ * 72. Analytics is dispatcher/admin only, and the capability is declared.
+ *
+ * `docs/14 §10`: "Read operational analytics | - | - | ? | ? | `GET /api/analytics`
+ * is `dispatcher`/`admin`, else `403 FORBIDDEN` (FR-117)" and ACC-1: "The
+ * `permissions[]` array from `GET /api/me` drives the **UI affordances only**. The
+ * API re-checks every request (NFR-015)."
+ *
+ * The capability id is whatever the 61-row matrix declares; the check is that
+ * analytics is gated at all, and that a client-side gate is not the only one.
+ */
+/**
+ * `r48_readOperationalAnalytics` and `r50_recomputeAnalytics` exist in the 61-row
+ * matrix, and their VALUES are the gate `docs/14 §10` specifies: dispatcher and
+ * admin `full` for the read, admin only for the recompute. The assertion is on the
+ * values, not merely on the key existing — a capability declared and left
+ * `denied` everywhere would pass a presence check and gate nothing.
+ */
+const permsSource = read('lib/auth/permissions.ts');
+const readCapability =
+  /r48_readOperationalAnalytics:\s*\{[^}]*dispatcher: 'full'[^}]*admin: 'full'[^}]*\}/.test(permsSource) &&
+  /r48_readOperationalAnalytics:[^\n]*citizen: 'denied'[^\n]*responder: 'denied'/.test(permsSource);
+const recomputeIsAdminOnly =
+  /r50_recomputeAnalytics:[^\n]*dispatcher: 'denied'[^\n]*admin: 'full'/.test(permsSource);
+/** And the nav must not offer the page to a role the capability denies. */
+const navGatesAnalytics = /href === '\/analytics'\) return role === 'dispatcher' \|\| role === 'admin';/.test(
+  read('config/nav.ts'),
+);
+check(
+  'Analytics is gated by r48 (dispatcher/admin), recompute by r50 (admin only), and the nav matches (docs/14 §10, FR-117)',
+  readCapability && recomputeIsAdminOnly && navGatesAnalytics,
+  !readCapability
+    ? 'r48_readOperationalAnalytics does not grant dispatcher/admin and deny citizen/responder as docs/14 §10 specifies'
+    : !recomputeIsAdminOnly
+      ? 'r50_recomputeAnalytics is not admin-only — docs/14 §10 says a dispatcher cannot recompute'
+      : 'the navigation does not restrict /analytics to dispatcher/admin, so a citizen may be offered a page that 403s',
+);
+
+/**
+ * 73. Location analytics group on a CELL, never export individual coordinates.
+ *
+ * brief §27: "For historical density views, aggregation should be preferred over
+ * exposing individual sensitive coordinates when possible." `docs/14 §2.5` is
+ * blunter: "`topLocations` | `count(P grouped by geoCells[0] - the incident's own
+ * geohash-6)`" — a CELL count, never a coordinate list.
+ *
+ * The check is that the location helper's return type has no latitude or longitude
+ * field, which makes an export of precise locations impossible through it.
+ */
+const topLocationsFn = (metricsSource.match(/export function topLocations\([\s\S]*?\n\}/) ?? [''])[0];
+/**
+ * No coordinate in the returned shape.
+ *
+ * Asserted on the RETURNED OBJECT LITERAL rather than on a type annotation,
+ * because the function infers its type from the literal — the literal IS the
+ * contract. `lat|lng` would false-positive on "location", so the check looks for
+ * an actual coordinate pair.
+ */
+const returnsCellCounts = /\(\{ geohash6, count \}\)/.test(topLocationsFn);
+const hasNoCoordinateFields =
+  !/\blat:|\blng:|\blatitude:|\blongitude:|\bgeo:/i.test(topLocationsFn) &&
+  !/\{\s*lat\s*,/.test(topLocationsFn);
+/** And the per-incident position is DROPPED and reported as a count, not returned. */
+const withoutPositionIsCounted = /withoutPosition: number/.test(topLocationsFn) &&
+  /withoutPosition \+= 1/.test(topLocationsFn);
+check(
+  'Location analytics return a geohash-6 cell count and never individual coordinates (brief §27, docs/14 §2.5)',
+  returnsCellCounts && hasNoCoordinateFields && withoutPositionIsCounted,
+  !returnsCellCounts
+    ? 'topLocations does not return a { geohash6, count } shape'
+    : !hasNoCoordinateFields
+      ? 'topLocations exposes a coordinate in its return shape'
+      : 'positionless incidents are dropped rather than reported',
+);
+
+/**
+ * 74. The index the live analytics scan needs is declared.
+ *
+ * The live path is a range query over `incidents` by `createdAt` with the soft-delete
+ * filter, bounded by `LIVE_SCAN_CAP`. Without a matching composite index it is a
+ * `failed-precondition`, which the UI would render as "not enough data" — an
+ * analytics page that looks like a quiet period rather than a broken query.
+ */
+const declaredIndexSigs = new Set(
+  (JSON.parse(indexesJson9).indexes ?? []).map((entry) =>
+    (entry.fields ?? []).map((f) => f.fieldPath).join(','),
+  ),
+);
+/** `deletedAt ASC, createdAt DESC` is the shape a `deletedAt == null` + range query needs. */
+const liveScanIndexed = declaredIndexSigs.has('deletedAt,createdAt') ||
+  declaredIndexSigs.has('deletedAt,createdAt,status') ||
+  declaredIndexSigs.has('createdAt');
+check(
+  'A composite index exists for the bounded live analytics scan over incidents (docs/14 §3.4)',
+  liveScanIndexed,
+  liveScanIndexed
+    ? ''
+    : 'no deletedAt+createdAt index on incidents; the live path would fail with failed-precondition and render as "not enough data"',
+);
+
 const pad = Math.max(...results.map((r) => r.label.length));
 let failed = 0;
 

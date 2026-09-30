@@ -44,13 +44,47 @@
 /* ========================================================================== */
 
 /**
- * The live operational queue. `types/enums.ts`'s `ACTIVE_STATUSES` — re-exported
- * rather than copied, because two lists of "what is active" would drift and the
- * drift would be invisible until a resolved incident stopped appearing on a map.
+ * The six statuses both `docs/11 §2.1` and `docs/14 §2.1` call "active".
  *
- * Imported AND re-exported, because a bare `export … from` does not bring the name
- * into this module's scope — and `QUEUE_STATUS_WINDOW` below needs it locally.
+ * ---------------------------------------------------------------------------
+ * A DOCUMENT NAMING COLLISION, AND THE BUG IT CAUSED
+ * ---------------------------------------------------------------------------
+ * Two documents name the same seven elements differently:
+ *
+ * | Set | `docs/07 §12.1` | `docs/11 §2.1` | `docs/14 §2.1` |
+ * | --- | --- | --- | --- |
+ * | 6 elements, no `resolved` | — | `ACTIVE_STATUSES` | "Active statuses" |
+ * | 7 elements, **with** `resolved` | `ACTIVE_STATUSES` | `OPEN_STATUSES` | "Open statuses" |
+ *
+ * `types/enums.ts` follows `docs/07 §12.1`, so its `ACTIVE_STATUSES` is the
+ * **seven**-element one. `docs/11` and `docs/14` use the name `ACTIVE_STATUSES` for
+ * the **six**-element subset, and call the seven-element set `OPEN_STATUSES`.
+ *
+ * Reading `types/enums.ts`'s `ACTIVE_STATUSES` as the set `docs/14 §2.1` means is
+ * wrong in two places, and Phase 8 made it in one:
+ *
+ * 1. **`counts.active` and `counts.resolved` double-counted.** Every resolved
+ *    incident landed in both buckets, so a unit test asserting the buckets are
+ *    disjoint failed — which is how the collision was found rather than shipped.
+ * 2. **The dispatcher's live queue showed RESOLVED incidents.** `docs/11 §2.1`'s L1
+ *    row filters `status in ACTIVE_STATUSES` using *that document's* meaning — the
+ *    six. Filtering on the seven put a finished incident back in the work queue.
+ *
+ * So this module carries the six-element set under an unambiguous name, and
+ * `OPEN_STATUSES` below is the seven-element one. Phase 3's array is left exactly
+ * as it is — a test pins its length at 7 for a documented reason ("a
+ * resolved-but-not-closed incident still has an open audit obligation"), and that
+ * reason is about the *incident* being open, not about it being in a work queue.
  */
+export const LIVE_ACTIVE_STATUSES = [
+  'new',
+  'triaged',
+  'verified',
+  'assigned',
+  'en_route',
+  'on_scene',
+] as const satisfies readonly IncidentStatus[];
+
 import { ACTIVE_STATUSES, TERMINAL_STATUSES } from '@/types';
 import type { IncidentStatus } from '@/types';
 
@@ -192,13 +226,16 @@ export function isSetSizeLegal(name: QuerySetName): boolean {
 }
 
 /**
- * The statuses L1 treats as "live", re-derived as a plain array for the query
- * builder.
+ * The statuses L1 treats as "live": the SIX, per `docs/11 §2.1`.
  *
- * `ACTIVE_STATUSES` is `as const satisfies readonly IncidentStatus[]`, so it is
- * already a readonly tuple of literal types. This exists so `queries.ts` has ONE
- * import for the queue's status window rather than two, and so the coupling
- * between "what the queue shows" and "what the query filters" is visible in one
- * place.
+ * `docs/11 §2.2`'s L1 row reads "`deletedAt == null`, `status in ACTIVE_STATUSES`",
+ * and in that document `ACTIVE_STATUSES` is the six-element set — so a resolved
+ * incident does not appear in the dispatcher's work queue. See the collision note
+ * above; using `types/enums.ts`'s seven-element array here was the bug.
+ *
+ * Phase 8 shipped pointing at the seven, and this corrects it.
  */
-export const QUEUE_STATUS_WINDOW: readonly IncidentStatus[] = [...ACTIVE_STATUSES];
+export const QUEUE_STATUS_WINDOW: readonly IncidentStatus[] = [...LIVE_ACTIVE_STATUSES];
+
+/** `docs/14 §2.1`'s "Active statuses", for the analytics count buckets. */
+export const ANALYTICS_ACTIVE_STATUSES: readonly IncidentStatus[] = [...LIVE_ACTIVE_STATUSES];
