@@ -777,3 +777,40 @@ Acceptance: quoting a `requestId` in a bug report is sufficient to find the full
 | 18 | Blocking a notification on the request path | Violates FR-107. | Emit after the response-critical write; never fail the request. |
 | 19 | Rejecting the whole request because one media item failed | A citizen with two good photos and one bad file should still get an incident. | Per-item `details`, continue, then `EMPTY_REPORT` only if nothing is left. |
 | 20 | An empty `catch` around a `setCustomUserClaims` call | A claim that silently failed leaves the user in a half-changed state. | `roleChangePending = true`, `202`, `claims.sync_failed` log, admin health counter. |
+
+---
+
+## Phase 10 logging and disclosure audit (2026-09-30)
+
+All **14** `console.*` call sites in the repository were read. Findings:
+
+**No secret, token, password, uploaded content or exact coordinate is logged
+anywhere.** Three sites are guarded by `NODE_ENV !== 'production'`; the remainder are
+an error boundary, a mapped Firestore code, and budget counts.
+
+### The one judgement call
+
+The Phase 10 listener teardown logs a **count and a reason**, never a uid:
+
+```ts
+console.warn(`[auth] closed ${closed} realtime listener(s): ${reason}`);
+```
+
+Naming the account would make the log more useful for debugging, and it is
+deliberately omitted. A log line carrying a uid is a record of which human was signed
+in at a moment in time, retained wherever logs are retained, for a diagnostic that a
+count satisfies. The *reason* (`signed_out`, `switched_account`) is what tells an
+investigator whether the teardown was correct, and it carries no identity.
+
+### Stack traces and internals
+
+The funnel is unchanged: `toAppError` maps to a typed `AppError`, and a production
+response carries a code, a safe message and a request id. No stack trace, no
+filesystem path, no Firestore internal, no credential reaches a client. Verified by
+reading every error construction site reachable from a route.
+
+### The rate limiter fails closed
+
+Not an error-handling change, but it belongs in this document's spirit: if the
+rate-limit bucket read fails, `enforceRateLimit` throws `DB_UNAVAILABLE` (503) rather
+than allowing the request. A limiter that fails open is not a limiter.

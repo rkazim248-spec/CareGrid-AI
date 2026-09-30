@@ -2041,3 +2041,61 @@ Every row is real. Nothing here is a hypothetical, and nothing here is hidden in
 | Trust boundaries TB1..TB5 | [03](./03_SYSTEM_ARCHITECTURE.md) §7 |
 | `middleware.ts` scope limits | [05](./05_FRONTEND_ARCHITECTURE.md) §9 |
 | Folder paths for every file named here | [20](./20_PROJECT_FOLDER_STRUCTURE.md) §2 |
+
+---
+
+## Phase 10 verification addendum (2026-09-30)
+
+Phase 10 audited this document's controls rather than changing them. Three results
+are worth recording here.
+
+### 1. The listener teardown was missing, and is now implemented
+
+`docs/11 §3.5` requires `unsubscribeAll()` on an identity change. The function
+existed from Phase 8; it had **no caller** through Phase 9. Every control in this
+document concerns the *request* boundary, and this was a defect at a different one —
+the *subscription* boundary. A Firestore `onSnapshot` captures its credential at
+subscribe time, so a listener that outlives its user keeps querying on the old
+user's behalf. L5 is scoped `where('recipientUid','==',uid)`, so that is one
+person's private correspondence.
+
+Implemented in `lib/realtime/identity.ts` (the pure rule) and
+`lib/firebase/auth.ts` (the two call sites: `signOut()`, and
+`handleAuthStateOrIgnoreError` for the four paths a user does not take — a revoked
+token, a terminated session, a deleted account, a second-tab switch). Verified by 15
+unit tests and security checks C75–C77, all mutation-tested.
+
+**A new rule follows from it, and it is not obvious:** a teardown must key on the
+**identity**, not on the auth *event*. `onAuthStateChanged` fires on every ID-token
+refresh, roughly hourly for every signed-in user, so an event-keyed teardown would
+close and reopen every channel once an hour.
+
+### 2. Four role-enforcement findings, none of them a privilege escalation
+
+- **Role is enforced from a custom claim** (`request.auth.token.role`), which is a
+  server-written mirror and can lag a role change by up to one token lifetime. §2
+  forbids trusting the *client*, which is not what happens, and the API detects the
+  stale case and answers `403 ROLE_MISMATCH` rather than trusting it. Recorded so a
+  future change does not remove the detection.
+- **`config/nav.ts` gates `/analytics` by a hardcoded role**, not by capability
+  `r48`. The values agree today, and ACC-1 already makes the client gate UX only.
+  A hand-written second role test can drift from the matrix that exists to prevent
+  exactly that, so check C72 now asserts the nav matches the capability's values.
+- **`users/{uid}` is read-only to clients for every role.** A user cannot change
+  their own role, and cannot un-suspend themselves. User-editable preferences live on
+  a *separate* collection, `profiles/{uid}`, bounded by `hasOnly(profileWritableFields())`
+  and unable to set `uid`.
+- **`auditLogs` is append-only for every role, admin included.** An audit log an
+  admin can rewrite is not one, and a deleted record asserts that nothing happened.
+
+### 3. The rules in this document have not been executed
+
+§17.1's rate limiter and the rules in `firestore.rules` are verified **structurally**
+(135 mechanical checks). **No check has evaluated them.** Structural reading cannot
+catch a rule that is well-formed and wrong — a precedence slip, an inverted helper, a
+`hasOnly` list missing one field. The Firestore rules emulator requires a Java
+runtime, which is not installed in the environment this audit ran in.
+
+This is the largest unverified surface in the product. The deny/allow matrix to assert
+is written out in `docs/SECURITY_AUDIT_REPORT.md` §9.1 so the work is ready to
+execute.

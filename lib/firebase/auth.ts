@@ -61,6 +61,8 @@ import type { Auth, PasswordValidationStatus, Unsubscribe, User, UserCredential 
 
 import { getFirebaseClient } from '@/lib/firebase/client';
 import { getAppUrl } from '@/lib/env.client';
+import { unsubscribeAll } from '@/lib/realtime/listener-registry';
+import { createIdentityWatch } from '@/lib/realtime/identity';
 import type { AccountStatus, UserRole } from '@/types/enums';
 
 /* ========================================================================== */
@@ -375,10 +377,50 @@ export async function confirmNewPassword(oobCode: string, newPassword: string): 
  *
  * Deliberately NOT cleared: `cg.ui`. Deliberately cleared: everything else,
  * because a shared device must not show the previous person's draft.
+ *
+ * ---------------------------------------------------------------------------
+ * STEP 0, ADDED IN PHASE 10: CLOSE THE REALTIME LISTENERS FIRST
+ * ---------------------------------------------------------------------------
+ * `clearUserScopedStorage()` reaches `localStorage` and `sessionStorage`. It does
+ * NOT reach a Firestore listener, which is not storage — it is a live subscription
+ * holding the previous user's data in memory, and `state.items` in every consumer
+ * still points at it. So until Phase 10, signing out on a shared device left the
+ * previous person's live incident queue, dispatch board and **private notification
+ * list** in the app's memory, and a second person signing in could read them.
+ *
+ * The teardown runs BEFORE `fbSignOut`, not after, and the order is the point:
+ * `fbSignOut` resolves only once the token is gone, and anything that reads
+ * listener state in that window would find the old account's channels still
+ * attached. Closing first makes the window empty rather than merely short.
+ *
+ * `decideListenerTeardown` decides; this function acts.
  */
 export async function signOut(): Promise<void> {
+  closeRealtimeListenersFor('signed_out');
   await fbSignOut(auth());
   clearUserScopedStorage();
+  // The identity the app is ABOUT to be, not the one it was. `fbSignOut` fires
+  // `onAuthStateChanged(null)` and the watch advances itself, but if the auth
+  // listener is torn down first (a sign-out during a page teardown) that event
+  // never arrives, and the watch would still believe someone is signed in — so
+  // the next person to sign in would be treated as `same_identity` and keep the
+  // previous account's listeners.
+  identityWatch.reset();
+}
+
+/**
+ * Close every open realtime listener, and say why.
+ *
+ * Exported for the Phase 10 test suite and for a sign-out that happens outside
+ * this module (an admin revoking an account, a token-invalidated event). Returns
+ * the number of channels closed so the caller can log it.
+ */
+export function closeRealtimeListenersFor(reason: string): number {
+  const closed = unsubscribeAll();
+  if (closed > 0 && process.env.NODE_ENV !== 'production') {
+    console.warn(`[auth] closed ${closed} realtime listener(s): ${reason}`);
+  }
+  return closed;
 }
 
 /**
@@ -438,15 +480,57 @@ export function subscribeToAuthState(
  * is caught and reported as "signed out" — which is the truth: no usable
  * session exists.
  */
+/**
+ * The app's record of who is signed in, for the listener-teardown rule.
+ *
+ * **One per module, not per subscriber.** `subscribeToAuthState` is called from
+ * more than one place, and a watch per subscriber would give each its own "previous
+ * uid" — so a second subscriber mounting after a sign-out would see
+ * `initial_resolution` where the first saw `signed_out`, and the teardown would be
+ * skipped by whichever subscriber happened to observe the change first.
+ */
+const identityWatch = createIdentityWatch();
+
+/**
+ * Wrap an auth handler so listeners are closed when — and only when — the
+ * *identity* changes.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS THE ONLY PLACE THAT TEARS DOWN ON AN AUTH EVENT
+ * ---------------------------------------------------------------------------
+ * `signOut()` covers the path the user takes. This covers the ones they do not: a
+ * token revoked from the Firebase console, a session terminated by `disableSignIn`,
+ * an account deleted elsewhere, and an account switch in a second tab. Every one
+ * of those arrives as an `onAuthStateChanged` event and nowhere else, so a teardown
+ * wired only into `signOut()` would miss all four.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY IT WRAPS THE *HANDLER* RATHER THAN ADDING A SUBSCRIPTION
+ * ---------------------------------------------------------------------------
+ * `handleAuthStateOrIgnoreError` is the single funnel every auth handler in the app
+ * passes through, so wrapping it here covers every current and future subscriber.
+ * A second `onAuthStateChanged` would be one more subscription Firebase has to keep
+ * alive, for an event the first one already delivers.
+ */
 function handleAuthStateOrIgnoreError(
   handler: (user: User | null) => void,
 ): (user: User | null) => void {
   return (user) => {
+    // BEFORE the handler, so the state the handler reads is already correct. A
+    // handler that re-renders on sign-out must not see the previous account's
+    // notifications for one frame.
+    const decision = identityWatch.observe(user?.uid ?? null);
+    if (decision.teardown) {
+      closeRealtimeListenersFor(
+        decision.reason + ' (uid ' + (decision.closingUidFor ?? 'unknown') + ')',
+      );
+    }
+
     try {
       handler(user);
     } catch (error) {
       if (process.env.NODE_ENV !== 'production') {
-          console.warn('[auth] onAuthStateChanged handler threw; treating as signed out.', error);
+        console.warn('[auth] onAuthStateChanged handler threw; treating as signed out.', error);
       }
       handler(null);
     }

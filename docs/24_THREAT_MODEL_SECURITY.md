@@ -1033,3 +1033,54 @@ To be stated in the README, on `/about`, and in the demo script — not buried:
 | FR and NFR IDs cited throughout | [01](./01_PRODUCT_REQUIREMENTS_DOCUMENT.md) §6, §7 |
 | `middleware.ts` scope limits | [05](./05_FRONTEND_ARCHITECTURE.md) §9 |
 | Every file path named in this document | [20](./20_PROJECT_FOLDER_STRUCTURE.md) §2 |
+
+---
+
+## Phase 10 threat-model review (2026-09-30)
+
+Each STRIDE class was checked against the implementation. The result is mostly
+"no surface", which is worth recording precisely because a threat model that lists
+only realised attacks implies the rest went unconsidered.
+
+| Class | Result |
+| --- | --- |
+| **Spoofing** | No surface. Every API handler takes a Firebase ID token; the Firestore rules use `request.auth`. Role is a server-written claim, never a client field. |
+| **Tampering** | Controlled. `users/{uid}` refuses all client writes; `auditLogs` is append-only; updates are bounded by `diff().affectedKeys().hasOnly()`; creates by `hasOnly()` on the **full** key set (a diff is empty on create, so it would gate nothing). |
+| **Repudiation** | Addressed. Operational actions are audited with actor, action, timestamp, target, metadata. |
+| **Information disclosure** | **One finding — CG-10-01, fixed.** A realtime listener outliving its identity, exposing the previous account's notification list, incident queue and dispatch board on a shared device. |
+| **Denial of service** | Controlled. A Firestore-backed rate limiter on every mutating handler and on the abuse-prone reads; bounded listener count; bounded upload size and count; bounded AI prompt and media. **Fails closed**: a bucket-read error is a 503, not a pass. |
+| **Elevation of privilege** | No surface found. 61-row capability matrix; per-route `requireCapability`; client gates are UX only. |
+
+### Elevation by AI — explicitly not present
+
+The architecture is report → validate → Gemini → schema-validate → human/system review
+→ operational workflow. **No AI output path reaches authorization or dispatch.** No
+model output is written to a role, a permission, or a dispatch document. The system
+instruction is a non-interpolated constant, so no user text can redefine it, and
+untrusted report text is wrapped in delimiters that the sanitiser defangs first — a
+report containing `</citizen_report>` cannot close its own block.
+
+### Injection classes — no surface
+
+| Class | Result |
+| --- | --- |
+| **XSS** | **Zero** sinks: no `dangerouslySetInnerHTML`, `eval`, `new Function`, `innerHTML =`, `outerHTML =`, `document.write`, `insertAdjacentHTML` across 390 files. CSP has no `unsafe-inline` in `script-src`. |
+| **SSRF** | The server fetches **no** user-supplied URL. The only absolute fetch is a hardcoded Maps host, so loopback, private ranges and the cloud metadata endpoint are unreachable **by construction** — there is no code path that would reach them. |
+| **CSRF** | No session cookies, so there is no ambient credential for a cross-site request to ride. Origin is asserted on state-changing requests, and `form-action 'self'` is the CSP backstop. |
+| **Open redirect** | No navigation is driven by request input. |
+| **Prompt injection** | Handled at four layers: a non-parameterised system instruction, delimiter wrapping, delimiter defanging, and a scoring heuristic. Output is Zod-validated with enum-constrained categories and confidences bounded to 0–1. |
+
+### Privacy threats
+
+| Threat | Control |
+| --- | --- |
+| Precise citizen location exposure | Reverse geocoding is server-only with the server key. Analytics returns **geohash-6 cell counts**, never coordinates — the return shape has no `lat`/`lng` field, so an export is impossible through it. |
+| Responder tracking | Map layer gated to dispatcher/admin; path-derived ownership prevents writing another responder's position; staleness is surfaced. |
+| Silent metric fabrication | An unmeasurable metric is `null`, never `0`. `0` asserts "we measured zero"; `null` asserts "we could not measure this". A dispatcher seeing "0s" would read it as *resolved instantly*. |
+
+### The standing caveat
+
+**The Firestore and Storage rules have not been executed.** Every rules claim in this
+review is structural — read from the rule text — because the emulator requires a JDK
+that is not installed. Structural reading cannot catch a rule that is well-formed and
+wrong.

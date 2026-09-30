@@ -1680,3 +1680,65 @@ This is worth building **regardless** of which option is chosen, because it is t
 ---
 
 **End of document 19.** Amendments must reference the anchor document they change, and must not introduce an environment variable, endpoint, script, collection, or file path that is not already defined in [07](./07_DATABASE_SCHEMA.md), [08](./08_API_SPECIFICATION.md), [20](./20_PROJECT_FOLDER_STRUCTURE.md), or [21](./21_ENVIRONMENT_VARIABLES.md).
+
+---
+
+## Phase 10 pre-deployment gate (2026-09-30)
+
+The build is green. **A green build is not a deployment gate.** This section states
+what must additionally be true in the *console* and the *deployed project* before a
+production deploy, because none of it is a repository setting and none of it was
+verifiable from the source tree.
+
+### Console and project configuration — unchecked
+
+| Item | Why it matters if missed |
+| --- | --- |
+| **Deploy the 19 Firestore indexes** | **The worst failure in this list.** An un-deployed index makes a valid query fail as `failed-precondition`, and the UI renders that as "not enough data" — a silent failure indistinguishable from a quiet week. |
+| Deploy `firestore.rules` | The API uses the Admin SDK and bypasses rules entirely, so a *missing* rules deploy does not break the app; it leaves every client listener unprotected while everything appears to work. |
+| Deploy `storage.rules` | Same failure mode. |
+| Restrict the Maps **browser** key by HTTP referrer and by required APIs | An unrestricted browser key is a billing liability and a quota drain. |
+| Restrict the Maps **server** key by IP | It holds geocoding quota and is server-only by code — but "by code" is not "by configuration". |
+| Configure authorised domains | `signInWithPopup` fails for any origin not listed. |
+| Confirm auth providers match `docs/10 §3.1` | `email` and `google` are documented and enabled in code. |
+
+### Secrets required in production
+
+```
+GEMINI_API_KEY=                 # required — without it triage silently uses the
+                                # keyword fallback and the app LOOKS healthy
+GOOGLE_MAPS_SERVER_KEY=         # required for reverse geocoding (server-only)
+CRON_SECRET=                    # required in production; guards the cron endpoints
+APP_TIMEZONE=                   # e.g. Asia/Kolkata
+NEXT_PUBLIC_APP_URL=            # must match the deployed origin exactly — it seeds
+                                # the CSRF allow-list
+```
+
+**`GEMINI_API_KEY` deserves a second look.** A missing key does not fail loudly: the
+keyword engine takes over and the product appears to work while the AI triage feature
+is absent. `docs/21` already records this; the deployment checklist should verify the
+variable is **present**, not merely declared.
+
+### Build gate as measured
+
+| Gate | Result |
+| --- | --- |
+| `tsc --noEmit` | 0 errors |
+| ESLint | 0 errors, 0 warnings |
+| Vitest | 1,573 / 47 files |
+| Security checks | 135 / 135 |
+| `npm run build` | exit 0 |
+| Encoding | clean |
+
+### One outstanding dependency decision
+
+`npm audit` reports a **High** advisory in `postcss`, transitive via `next`. It is
+**not** a production dependency and **no application file imports it**; both of its
+advisories require stringifying attacker-controlled CSS, and this app compiles its own
+Tailwind at build time. The fix is a `next` major.
+
+A non-breaking `npm audit fix` was applied (`gaxios`, 12 → 11 advisories).
+**`npm audit fix --force` was deliberately not run.** Pinning or overriding `postcss`
+is a decision about accepting an upstream advisory in exchange for stability, and it
+belongs to whoever owns the release — not to a hardening phase that was told not to
+break the Firebase/Next integration.

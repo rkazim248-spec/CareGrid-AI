@@ -914,3 +914,51 @@ Ordered by expected impact per unit of effort. Each item names the files it touc
 | **DR-22** | Should `/dashboard` KPI tiles use a separate listener, or derive from the queue listener as proposed? | A separate listener costs +50 attach reads and +1 read per change per client | Derive from the queue listener. One listener, one source, and the tiles cannot disagree with the queue. The cost is that the "available responders" tile needs its own listener (row 2), which is a different collection and therefore not redundant |
 | **DR-23** | What is the acceptable `p99` for `POST /api/incidents` with 3 images, given the ~9 s total budget? | p95 is the contract; p99 determines whether the 20 s hard timeout is ever hit | Assert p99 ≤ 1.5 s for the **app** portion and treat the AI portion separately with a p99 ≤ 12 s. If a run exceeds the 20 s hard abort more than once in 100, the AI step is moved off the request path (DR-01) |
 | **DR-24** | Do we need a per-route Lighthouse gate, or is a global budget assertion enough? | Per-route is stricter and more informative; global is faster | Per-route for `/report`, `/dashboard`, `/map`, and `/incidents/[id]`. Global assertions for the rest, with a warning rather than a failure |
+
+---
+
+## Phase 10 performance review (2026-09-30)
+
+**No measurement was possible** — no browser, no Lighthouse, no load test, no live
+Firebase project. What follows is therefore *bounds enforced by construction*, which
+is a real and different property from "fast", and it is labelled as such.
+
+### Bounds that are enforced, not merely intended
+
+| Surface | Bound | Enforced by |
+| --- | --- | --- |
+| Realtime listeners | 8 channels, per-listener ceilings | The registry **throws** above a declared ceiling. A limit cannot be raised by editing a call site. |
+| Listener re-subscription | A `queryKey` string; a re-render does not resubscribe | Phase 8, unit-tested |
+| Listener data on unmount | Detached, and detach is **idempotent** | Phase 8 + 15 tests this phase |
+| L5 notifications | 50 documents | `docs/13 §3.1`; the unread count is derived from those 50, and the UI says so |
+| Analytics live scan | `LIVE_SCAN_CAP = 500` | A capped scan reports `advisory` rather than presenting itself as complete |
+| Analytics range | `MAX_RANGE_DAYS = 366` | `daysInRange` is bounded and stops rather than spinning on a bad range |
+| Analytics rollup reads | One per day in range | The FR-116 48 h decision picks rollup over live |
+| Precomputed collections | **Never** read by a client listener | FR-099, checked |
+| Uploads | 15 MB per object, 30 signs/hour | Storage rules at write time, plus the route limiter |
+| AI prompts and media | Bounded by `AI_BOUNDS` | Schema limits |
+| Rate-limit writes | One document per subject per window | Hashed bucket id |
+
+### The design decisions that keep reads down
+
+1. **Rollups instead of scans** — a 30-day window is 30 document reads, not 3,000. The
+   FR-116 rule keys on the **end** of the range, so a 90-day view ending today is live
+   rather than serving data up to 48 h stale.
+2. **A capped scan is never presented as complete.** `AnalyticsRange` carries both
+   `source` and `advisory`, so a truncated scan has to say so.
+3. **No listener over a historical collection.** `analyticsDaily` and `riskZones`
+   are precomputed; a client recomputing them would defeat the point.
+4. **A query key, not a re-subscribe.** The realtime layer's most expensive failure mode
+   is a re-render storm opening duplicate channels; the composite key prevents it.
+5. **Null metrics cost nothing.** A period with no resolvable incidents returns `null`
+   and renders a sentence, rather than forcing a query to produce a number.
+
+### Not measured
+
+Initial load, dashboard render time, real Firestore read counts, map rendering cost,
+chart re-render behaviour, bundle size, and Lighthouse scores. **Every figure in the
+table above is a bound, not an observation.** Before claiming a performance
+requirement is met, it has to be measured against a real Firebase project — the read
+counts especially, because an index that has not been deployed fails as
+`failed-precondition` and a dashboard that swallows that error looks idle rather than
+broken.

@@ -1050,3 +1050,47 @@ Minimum: **NVDA + Firefox on Windows**, **VoiceOver + Safari on macOS/iOS**, and
 | A6 | **Screen-reader matrix** (§11.4) | NVDA + VoiceOver + TalkBack for v1. Add JAWS in the v1.1 audit. Confirm whether a paid audit is in scope | Release gate |
 | A7 | **`prefers-reduced-motion` override persistence** — `/settings` "Reduce motion" is currently `localStorage`-only ([04](./04_UI_UX_DESIGN_SPECIFICATION.md) D9) | Acceptable for v1; a cross-device setting needs a `PATCH /api/me` schema change | v1.1 |
 | A8 | **Sticky-bar spacer enforcement** — no automated test that a sticky bar never covers the last list row | Add a Playwright assertion (`lastElementBottom <= stickyBarTop` after scrolling to the end) for `/report`, `/dashboard` (mobile), and `/incidents/[id]` (mobile). Recommended for v1, not deferred | Test suite |
+
+---
+
+## Phase 10 status: what is verified and what is not (2026-09-30)
+
+This section exists because the document makes **claims** and Phase 10 could not
+**test** them. Separating the two is the point.
+
+### Verified by reading the implementation
+
+| Property | Evidence |
+| --- | --- |
+| Interactive elements are semantic `button`/`a`/form controls | No clickable `div` acting as a control |
+| Colour is never the only signal | Every status carries a **text label** in addition to a colour variant. Phase 9's work: a `null` SLA renders `'default'`, never `'breached'` — a red tile for the absence of data is a thing a dispatcher acts on. |
+| Realtime updates are announced | The listener region is an `aria-live` region |
+| Focus is never lost on a re-render | Keys are stable; list rows are keyed by document id |
+| Empty, loading and error states are implemented | Every data surface has all three |
+| Charts are keyboard-reachable and have text alternatives | Chart cards carry a text summary |
+| Charts scroll horizontally on narrow viewports rather than shrinking | `docs/25` mobile chart rule |
+| No fixed width forces horizontal overflow | Flex/grid with `min-w-0` |
+| Map has a non-visual fallback | The incident list is the alternative view |
+
+### NOT verified — no browser was available
+
+| Property | Status |
+| --- | --- |
+| Keyboard traversal and visible focus states | **UNVERIFIED** |
+| Focus trapping in modals, and focus restoration on close | **UNVERIFIED** |
+| Measured colour contrast against the theme | **UNVERIFIED** |
+| Screen-reader labels and live-region politeness | **UNVERIFIED** |
+| Map keyboard operability and its fallback in a screen reader | **UNVERIFIED** |
+| **All 7 breakpoints: 320 / 375 / 390 / 768 / 1024 / 1280 / 1440** | **UNVERIFIED — nothing was rendered** |
+| The real CSP, `Permissions-Policy`, and COOP behaviour in a browser | **UNVERIFIED** |
+| Google `signInWithPopup` completing under `same-origin-allow-popups` | **UNVERIFIED** |
+
+**A claim in this document is not a measurement.** The properties above are asserted by
+the implementation and were read, not exercised, and every one of them can be wrong in
+a way that only a browser reveals — most obviously a focus ring that exists in CSS and
+is invisible against a dark surface.
+
+**To close this:** run `axe` (or Lighthouse accessibility) against the seven
+viewports, and do one manual keyboard pass per role's primary flow. That is a
+half-day of work and it is the only way this section can honestly be marked PASS.
+

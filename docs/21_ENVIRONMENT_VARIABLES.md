@@ -284,3 +284,39 @@ const serverSchema = z.object({
 | `WHATSAPP_TOKEN`, `SMS_API_KEY` | Optional channels behind a `NotificationChannel` interface with no provider implemented. If added later, they are **server-only** and default-disabled |
 | `SENTRY_DSN` is defined but optional | Zero-cost posture; no error-reporting SaaS is required |
 | `AUTH_SECRET` | No NextAuth; Firebase Auth is used |
+
+---
+
+## Phase 10 secrets verification (2026-09-30)
+
+### What was checked, and how
+
+| Check | Result |
+| --- | --- |
+| `GEMINI_API_KEY` in a browser bundle | **None.** Read only by `lib/env.server.ts`, which imports `server-only`. Enforced by checks C90, C90b, C91 — all mutation-tested. |
+| A non-`NEXT_PUBLIC_*` name read by `lib/env.client.ts` | **None.** The client env module reads only `NEXT_PUBLIC_*`. |
+| A `NEXT_PUBLIC_` name that is a secret | **None.** |
+| Tracked `.env` files | **None.** Only `.env.example`. |
+| `.gitignore` coverage | Covers `.env`, `.env*.local`, **and** environment-named files without the `.local` suffix — `.env.*` plus three `!…example` exceptions. |
+| Secrets in **git history** | **Zero.** Every reachable blob scanned for `AIza…` keys, PEM private-key headers, and long secret assignments. |
+| `.env.example` contents | 47 non-empty values, **all non-secret defaults** (URLs, model names, limits, timeouts, coordinates). |
+
+### The one file that reads a provider secret
+
+`lib/env.server.ts` — the only module permitted to read a provider key, and it is
+`server-only`. This was already the stated design in `services/ai/contracts.ts`
+("that is why `GEMINI_API_KEY` appears in exactly one file in this repository"); Phase
+10 made the claim **true and enforced** rather than aspirational, by asserting the
+property mechanically.
+
+**If a real secret is ever found in source or history, it must be rotated** — removing
+it from the working tree does not remove it from the objects, and a compromised key
+stays compromised. No such secret was found.
+
+### A gap worth naming
+
+**A missing `GEMINI_API_KEY` fails quietly.** The keyword fallback engages, triage
+degrades to a local classifier, and the product appears healthy while a headline
+feature is absent. A deployment check should assert the variable is **present** in the
+production environment, not merely documented. Already recorded in
+`docs/19`'s pre-deployment gate.

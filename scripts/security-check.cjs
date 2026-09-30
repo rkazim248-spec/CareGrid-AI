@@ -27,7 +27,17 @@ const { join, extname } = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const ROOT = process.cwd();
-const SKIP = new Set(['node_modules', '.next', '.git', 'docs', 'coverage']);
+/**
+ * Directories the checker never reads.
+ *
+ * `.kilo` was missing, and that is not a cosmetic omission: it holds a full stale
+ * copy of the project from an earlier phase, so several checks were reading TWO
+ * copies of every file. That is not harmless — a check can then be satisfied by a
+ * line in a worktree that is not part of the build, and a mutation test can appear
+ * to "not trigger" because a second copy of the target still has the original text.
+ * A checker that reads files nobody ships is measuring the wrong repository.
+ */
+const SKIP = new Set(['node_modules', '.next', '.git', 'docs', 'coverage', '.kilo', '.vercel', 'out']);
 
 const results = [];
 
@@ -3210,6 +3220,669 @@ check(
     ? ''
     : 'no deletedAt+createdAt index on incidents; the live path would fail with failed-precondition and render as "not enough data"',
 );
+
+{
+/* ------------------------------------------------------------------------ */
+/* Phase 10 — security, testing & production hardening                        */
+/* ------------------------------------------------------------------------ */
+/*
+ * Phase 1-9's checks asked "is this code shaped correctly?". Phase 10's ask a
+ * different question: "would a REGRESSION here be caught?".
+ *
+ * Each check below pins an invariant whose violation is silent — no exception, no
+ * failed build, no red screen. The listener-teardown one is the clearest example:
+ * before this phase `unsubscribeAll()` had ZERO callers, so signing out on a shared
+ * device left the previous account's live incident queue, dispatch board and private
+ * notification list in the app's memory, and nothing anywhere reported it.
+ *
+ * The audit that motivated these is `docs/SECURITY_AUDIT_REPORT.md`.
+ */
+
+const p10Auth = read('lib/firebase/auth.ts');
+const p10Identity = read('lib/realtime/identity.ts');
+const p10RateLimit = read('lib/server/rate-limit.ts');
+const p10Prompts = read('services/ai/prompts.ts');
+const p10TriageSchema = read('services/ai/schema.ts');
+const p10Middleware = read('middleware.ts');
+const p10EnvClient = read('lib/env.client.ts');
+
+/** Every `route.ts` under `app/api`, as source text. */
+function routeFiles() {
+  return walk('app/api')
+    .filter((f) => f.endsWith('route.ts'))
+    .map((f) => ({ file: f, source: read(f) }));
+}
+
+/** Strip comments, so a rule described in prose is not read as a rule broken. */
+function code10(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+/* ========================================================================== */
+/* 75. The identity-change teardown exists, and signOut does it FIRST         */
+/* ========================================================================== */
+
+const signOutBody = (p10Auth.match(/export async function signOut\(\): Promise<void> \{([\s\S]*?)\n\}/) ?? ['', ''])[1];
+/**
+ * The ORDER is the assertion, not the presence of the call.
+ *
+ * `fbSignOut` resolves only once the token is gone, and anything that reads
+ * listener state in that window would find the previous account's channels still
+ * attached. Tearing down first makes the window empty rather than merely short —
+ * which is the difference between "the data is gone almost immediately" and "the
+ * data is never there after sign-out completes".
+ */
+const teardownRunsBeforeSignOut =
+  signOutBody.includes('closeRealtimeListenersFor') &&
+  signOutBody.indexOf('closeRealtimeListenersFor') !== -1 &&
+  signOutBody.indexOf('closeRealtimeListenersFor') < signOutBody.indexOf('fbSignOut');
+check(
+  'signOut closes every realtime listener BEFORE the token is dropped (docs/11 §3.5)',
+  teardownRunsBeforeSignOut,
+  teardownRunsBeforeSignOut
+    ? ''
+    : 'signOut must call the listener teardown, and must do so before fbSignOut — otherwise the previous account\'s listener state is readable until the token resolves',
+);
+
+/**
+ * 76. The teardown is also wired into `onAuthStateChanged`.
+ *
+ * `signOut()` covers the path the user takes. It does NOT cover a token revoked
+ * from the Firebase console, a session terminated by `disableSignIn`, an account
+ * deleted elsewhere, or an account switch in a second tab. All four arrive as an
+ * `onAuthStateChanged` event and nowhere else — so a teardown wired only into
+ * `signOut()` is absent for every one of them.
+ */
+const authHandlerCallsTeardown =
+  /function handleAuthStateOrIgnoreError\([\s\S]*?identityWatch\.observe\([\s\S]*?if \(decision\.teardown\)/.test(
+    p10Auth,
+  ) && /closeRealtimeListenersFor\(/.test(p10Auth);
+check(
+  'An identity change on onAuthStateChanged also closes the listeners, not only an explicit sign-out (docs/11 §3.5)',
+  authHandlerCallsTeardown,
+  authHandlerCallsTeardown
+    ? ''
+    : 'only signOut tears listeners down; a revoked token, a terminated session, or an account switch in another tab leaves the previous account\'s channels attached',
+);
+
+/**
+ * 77. A token refresh must NOT tear down.
+ *
+ * This is the check that keeps 76 from being a bug. `onAuthStateChanged` fires on
+ * every ID-token refresh — roughly hourly for every signed-in user — so a teardown
+ * that keys on the event rather than the identity would close and reopen every
+ * channel once an hour. That is a visible flicker and a burst of extra Firestore
+ * reads, in exchange for no security gain, and it is the failure mode a reviewer
+ * would not notice without being told.
+ */
+const ruleIgnoresSameUid =
+  /if \(event\.previousUid !== null && event\.previousUid === event\.nextUid\)[\s\S]{0,120}?teardown: false/.test(
+    p10Identity,
+  ) &&
+  /reason: 'same_identity'/.test(p10Identity) &&
+  /if \(!event\.hasResolvedOnce\)[\s\S]{0,120}?teardown: false/.test(p10Identity);
+check(
+  'The teardown rule ignores a same-uid token refresh and the first resolution (docs/11 §3.5)',
+  ruleIgnoresSameUid,
+  ruleIgnoresSameUid
+    ? ''
+    : 'the rule tears down on a token refresh or on the first auth resolution — hourly channel churn, or a boot-time race with the listeners about to open',
+);
+
+/**
+ * 78. Every state-changing route declares a rate limit.
+ *
+ * `docs/10 §17.1` requires a limit on anything abuse-prone, and brief §21 lists
+ * report creation, Gemini analysis, upload signing, dispatch and status updates by
+ * name. The rule is enforced centrally in `withRequest`, so the check is that no
+ * mutation silently opts out of it.
+ */
+const routes10 = routeFiles();
+/**
+ * Every `withRequest` options block, PAIRED with its HTTP method.
+ *
+ * The first version returned the option blocks alone, so a route with a rate-limited
+ * PATCH and an unlimited GET was reported as "no rateLimit key" — the GET block was
+ * flagged and then attributed to the file's only mutating method. It fired on
+ * `api/me`, whose PATCH does declare `rateLimit: 'me.update'`; the correct
+ * implementation failed a check written to catch the incorrect one.
+ *
+ * Pairing them is also what lets the exemption be per-VERB rather than per-file,
+ * which is the right granularity: "this read is unbounded" and "this write is
+ * unbounded" are different claims.
+ */
+function requestBlocks(source) {
+  const out = [];
+  for (const m of source.matchAll(/export const (GET|POST|PUT|PATCH|DELETE)\s*=\s*withRequest\(\s*\{([\s\S]*?)\}\s*,/g)) {
+    out.push({ method: m[1], options: m[2] });
+  }
+  return out;
+}
+const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const mutationsWithoutLimit = [];
+for (const { file, source } of routes10) {
+  for (const { method, options } of requestBlocks(source)) {
+    // Only a STATE-CHANGING handler. A GET that a page load makes on every
+    // navigation is not an abuse-prone endpoint, and `api/me` GET is the documented
+    // case: limiting it breaks navigation for anyone who uses the product. Its
+    // exemption is verified separately by check 79, which is what distinguishes
+    // "deliberately unlimited" from "forgot to add one".
+    if (!MUTATING.has(method)) continue;
+    if (!/rateLimit:\s*'/.test(options)) {
+      mutationsWithoutLimit.push(file + ' [' + method + ']');
+    }
+  }
+}
+check(
+  'Every withRequest route declares a rateLimit key, so no mutation is silently unlimited (docs/10 §17.1, brief §21)',
+  mutationsWithoutLimit.length === 0,
+  mutationsWithoutLimit.length === 0
+    ? ''
+    : 'no rateLimit key: ' + [...new Set(mutationsWithoutLimit)].join(', '),
+);
+
+/**
+ * 79. A route that opts out of a limit must RECORD the decision.
+ *
+ * `api/me` GET is a real, deliberate exemption: it runs on every authenticated
+ * page load and every session refresh, so a limit there breaks navigation for
+ * someone who uses the product. The exemption is recorded as an explicit
+ * `POSITIVE_INFINITY` entry in `RATE_LIMIT_RULES`.
+ *
+ * This check makes the record **mandatory**. Before it, "deliberately unlimited"
+ * was only distinguishable from "forgot to add one" by reading the comment — so
+ * the next unlimited route would inherit that ambiguity.
+ */
+const infiniteRules = new Set(
+  [...p10RateLimit.matchAll(/'([a-zA-Z0-9_.]+)':\s*\{\s*routeKey:[^}]*?limit:\s*Number\.POSITIVE_INFINITY/g)].map(
+    (m) => m[1],
+  ),
+);
+/**
+ * A handler that declares NO limit must name a recorded infinite rule.
+ *
+ * Scoped to GET only. A mutation is already covered by check 78, which requires
+ * it to declare a finite key, so demanding an exemption record there too would be
+ * two checks for one condition.
+ */
+const unrecordedExemptions = [];
+for (const { file, source } of routes10) {
+  const unlimitedGets = requestBlocks(source).filter(
+    ({ method, options }) => method === 'GET' && !/rateLimit:\s*'/.test(options),
+  );
+  if (unlimitedGets.length === 0) continue;
+  // The exemption must be RECORDED: the route names a rule key, and the table
+  // declares that key with an infinite limit. A comment saying "no limit on
+  // purpose" is not the record — the table entry is, because that is what a
+  // reviewer and a mutation test can both see.
+  const named = [...source.matchAll(/RATE_LIMIT_RULES\[['"]([a-zA-Z0-9_.]+)['"]\]/g)].map((m) => m[1]);
+  if (!named.some((key) => infiniteRules.has(key))) unrecordedExemptions.push(file);
+}
+check(
+  'A route with no rate limit must record the decision as an explicit infinite rule (docs/10 §17.1)',
+  unrecordedExemptions.length === 0,
+  unrecordedExemptions.length === 0
+    ? ''
+    : 'unlimited but unrecorded: ' + unrecordedExemptions.join(', '),
+);
+
+/**
+ * 80. No rate-limit rule is declared and never wired.
+ *
+ * A dead rule is a limit someone wrote and a route that never got it. `me.read` was
+ * exactly that: declared with `POSITIVE_INFINITY`, referenced only in a comment,
+ * and attached to no handler — so the table looked like the route was governed when
+ * the route declared no key at all.
+ */
+const usedKeys = new Set();
+for (const { source } of routes10) {
+  for (const m of source.matchAll(/rateLimit:\s*'([a-zA-Z0-9_.]+)'/g)) usedKeys.add(m[1]);
+}
+const declaredKeys = new Set(
+  [...p10RateLimit.matchAll(/^\s{2}'([a-zA-Z0-9_.]+)':\s*\{\s*routeKey:/gm)].map((m) => m[1]),
+);
+/**
+ * A rule that is unused BUT explicitly infinite AND named in a route's own comment
+ * is a RECORDED EXEMPTION, not a dead rule.
+ *
+ * `me.read` is exactly that, and it is the reason this check has a carve-out rather
+ * than a blanket "every rule must be attached". Without the carve-out the correct
+ * implementation fails; with it, a genuinely dead limit — declared, finite, and
+ * attached to nothing — still fails, which is the case worth catching.
+ */
+const recordedExemptions = new Set();
+for (const { file, source } of routes10) {
+  for (const m of source.matchAll(/RATE_LIMIT_RULES\[['"`]([a-zA-Z0-9_.]+)['"`]\]/g)) {
+    if (infiniteRules.has(m[1])) recordedExemptions.add(m[1]);
+  }
+  void file;
+}
+const deadRules = [...declaredKeys].filter((k) => !usedKeys.has(k) && !recordedExemptions.has(k));
+check(
+  'Every rate-limit rule is either attached to a route or a recorded infinite exemption (docs/10 §17.1)',
+  deadRules.length === 0,
+  deadRules.length === 0
+    ? ''
+    : 'declared, finite, and attached to nothing: ' +
+        deadRules.join(', ') +
+        ' — a limit someone wrote and a route that never got it. (A rule listed with limit: Number.POSITIVE_INFINITY and named by a route is a deliberate exemption, not a gap.)',
+);
+
+/* ========================================================================== */
+/* Prompt injection                                                            */
+/* ========================================================================== */
+
+/**
+ * 81. The system instruction is not parameterised.
+ *
+ * `docs/09 §4.2`: the system instruction is the only text the model treats as
+ * authoritative, so a citizen's words in that position are not "data that might be
+ * confusing" — they are instructions. `brief §13`: "Do not allow user-controlled
+ * text to redefine the AI system prompt."
+ *
+ * The structural form is the guarantee: a `const` template literal with no
+ * interpolation. Any `${...}` in it is an injection channel, and a check that only
+ * read the *name* would pass the moment someone made it a builder function.
+ */
+const systemInstructionIsALiteral = /export const SYSTEM_INSTRUCTION = `[^`]*`;/.test(p10Prompts) &&
+  !/export const SYSTEM_INSTRUCTION = `[^`]*\$\{/.test(p10Prompts);
+check(
+  'SYSTEM_INSTRUCTION is a literal with no interpolation, so no user text can enter it (docs/09 §4.2, brief §13)',
+  systemInstructionIsALiteral,
+  systemInstructionIsALiteral
+    ? ''
+    : 'SYSTEM_INSTRUCTION interpolates a value — user-controlled text could reach the authoritative instruction',
+);
+
+/**
+ * 82. Untrusted text is WRAPPED, never concatenated.
+ *
+ * The delimiter is the second defence, after the literal system instruction: a
+ * report that contains `</citizen_report>` cannot end its own block if the wrapper
+ * neutralises the closing tag first. So both properties are asserted — that a
+ * wrapper exists, and that the sanitiser defangs the delimiter.
+ */
+const wrapsCitizenReport = /export function wrapCitizenReport\(/.test(p10Prompts) &&
+  /<citizen_report>/.test(p10Prompts) &&
+  /buildUserContent/.test(p10Prompts);
+const sanitiseSource = read('services/ai/sanitize.ts');
+const defangsDelimiter =
+  /<\/?citizen_report>/i.test(sanitiseSource) && /<\/?untrusted_extract>/i.test(sanitiseSource);
+check(
+  'Untrusted report text is wrapped in delimiters AND the delimiters are defanged before they reach the model (docs/09 §4.3, brief §13)',
+  wrapsCitizenReport && defangsDelimiter,
+  !wrapsCitizenReport
+    ? 'there is no wrapCitizenReport wrapper'
+    : 'the sanitiser does not defang the report delimiters, so a report containing </citizen_report> can end its own block',
+);
+
+/**
+ * 83. AI output is schema-validated, and a confidence is bounded to 0..1.
+ *
+ * brief §14: "Do not trust Gemini to obey the schema perfectly." A confidence
+ * outside 0..1 would pass a `z.number()` and then reach a comparison like
+ * `confidence < threshold`, where 4.5 silently means "very confident".
+ */
+const outputIsValidated = /export const aiTriageOutputSchema = z/.test(p10TriageSchema) &&
+  /category: z\.enum\(INCIDENT_CATEGORIES\)/.test(p10TriageSchema) &&
+  /urgency: z\.enum\(URGENCIES\)/.test(p10TriageSchema);
+const confidencesBounded = (p10TriageSchema.match(/z\.number\(\)\.min\(0\)\.max\(1\)/g) ?? []).length >= 2;
+check(
+  'Gemini output is Zod-validated, category and urgency are enums, and confidences are bounded to 0..1 (brief §14)',
+  outputIsValidated && confidencesBounded,
+  !outputIsValidated
+    ? 'the triage output is not validated against a Zod schema, or category/urgency are free strings'
+    : 'fewer than two confidences are bounded with min(0).max(1)',
+);
+
+/* ========================================================================== */
+/* Field-level and Storage rules                                               */
+/* ========================================================================== */
+
+/**
+ * 84. A client cannot change its own role, and `users/{uid}` is client-read-only.
+ *
+ * brief §6: "users cannot change their own role from the browser"; brief §8 lists
+ * `role` and `permissions` as protected. The mechanism is a read-only match block,
+ * which is stronger than a field diff — there is no field a client could add.
+ */
+/**
+ * The verbs are `get`/`list`, not `read`/`query` — Firestore rules use the former
+ * pair, and a check written against the latter silently never matches.
+ *
+ * The scope matters as much as the verb: user-editable preferences live on a
+ * SEPARATE collection, `profiles/{uid}`, which is writable but limited to
+ * `profileWritableFields()` and cannot set `uid`. So "a user cannot change their own
+ * role" is enforced by denying every write to `users/{uid}` outright — a stronger
+ * guarantee than a field diff, because there is no field a client could add.
+ */
+const usersRule = read('firestore.rules');
+const usersBlockDeclared = usersRule.includes('match /users/{uid}');
+const usersRefusesWrites =
+  /match \/users\/{uid}[\s\S]{0,600}?allow create, update, delete: if false;/.test(usersRule);
+const usersAreReadOnly = usersBlockDeclared && usersRefusesWrites;
+check(
+  'users/{uid} is read-only to clients, so no user can change their own role (docs/10 §4, brief §6, §8)',
+  usersAreReadOnly,
+  usersAreReadOnly ? '' : 'the users match block does not refuse all client writes',
+);
+
+/**
+ * 85. `auditLogs` is append-only, for every role.
+ *
+ * brief §28: "Do not allow ordinary users to modify audit history." An audit log
+ * that can be edited is not one, and a delete is as damaging as an update because
+ * the absence of a record asserts that nothing happened.
+ */
+const auditRule = read('firestore.rules');
+const auditBlockDeclared = auditRule.includes('match /auditLogs/');
+const auditRefusesRewrite = /match \/auditLogs\/[\s\S]{0,700}?allow update, delete: if false;/.test(auditRule);
+const auditAppendOnly = auditBlockDeclared && auditRefusesRewrite;
+check(
+  'auditLogs is append-only: update and delete are refused to every role (brief §28)',
+  auditAppendOnly,
+  auditAppendOnly ? '' : 'auditLogs does not refuse update and delete for all roles',
+);
+
+/**
+ * 86. Storage denies by default, and a write path is either owner-scoped with a
+ * size and MIME cap, or `if false`.
+ *
+ * brief §9: "Do not trust `file.name`, `file.type`, `file.size` from the client
+ * alone." A rules file that ends in `allow read, write: if false` has a default
+ * deny; one that ends in an allow has an open door.
+ */
+const storageSource = read('storage.rules');
+/** The window the catch-all's own body must fall inside. */
+const CATCH_ALL_WINDOW = 200;
+const catchAllIndex = storageSource.indexOf('match /{allPaths=**}');
+const storageDefaultDeny =
+  catchAllIndex !== -1 &&
+  storageSource.slice(catchAllIndex, catchAllIndex + CATCH_ALL_WINDOW).includes('if false');
+
+const finalEvidenceIsClosed =
+  storageSource.includes('match /incidents/{incidentId}') &&
+  /allow read, write, delete: if false;/.test(storageSource);
+const stagingIsCapped =
+  storageSource.includes('match /staging/{uid}') &&
+  /request\.resource\.size <=/.test(storageSource) &&
+  /request\.resource\.contentType\.matches\(/.test(storageSource);
+check(
+  'Storage denies by default, final evidence is closed to clients, and staging is owner-scoped with size + MIME caps (brief §9, §10)',
+  storageDefaultDeny && finalEvidenceIsClosed && stagingIsCapped,
+  !storageDefaultDeny
+    ? 'the catch-all match does not deny, so an undeclared path is open'
+    : !finalEvidenceIsClosed
+      ? 'the final-evidence path is not closed to clients'
+      : 'the staging write is not bounded by both a size and a content-type check',
+);
+
+/* ========================================================================== */
+/* Injection classes with no current occurrence                               */
+/* ========================================================================== */
+
+/**
+ * 87. No HTML/script injection sink anywhere in the app.
+ *
+ * brief §22: "Be extremely careful with `dangerouslySetInnerHTML`. If used anywhere,
+ * remove it unless strictly necessary."
+ *
+ * **The whole tree is scanned, not a hand-picked list of components.** A
+ * hand-picked list passes for the wrong reason the moment the sink appears
+ * somewhere new — which is the whole risk of the pattern. `eval`, `new Function`,
+ * `innerHTML =`, `document.write` and `outerHTML =` are included because they are
+ * the same class of sink: a way to turn a string into code.
+ */
+const SCRIPT_SINKS = [
+  ['dangerouslySetInnerHTML', /dangerouslySetInnerHTML/],
+  ['eval', /\beval\s*\(/],
+  ['new Function', /new\s+Function\s*\(/],
+  ['innerHTML =', /\.innerHTML\s*=(?!=)/],
+  ['outerHTML =', /\.outerHTML\s*=(?!=)/],
+  ['document.write', /document\.write\s*\(/],
+  ['insertAdjacentHTML', /\.insertAdjacentHTML\s*\(/],
+];
+
+/**
+ * Every scanned source file, ONCE.
+ *
+ * `walk('.')` is called three times below, and each call re-reads and re-stats the
+ * whole tree. Hoisting it also means the three checks provably saw the same set of
+ * files, which is the property that makes "no sink anywhere" a real claim.
+ *
+ * `walk` already excludes `docs` and — importantly — excludes `.cjs`, so this
+ * scanner cannot flag the very file that declares these patterns. A self-flagging
+ * check is a check that has to be weakened to pass, and weakening it removes the
+ * guarantee.
+ */
+/**
+ * Every scanned source file, with PATHS NORMALISED TO FORWARD SLASHES.
+ *
+ * `walk` builds paths with `path.join`, so on Windows they contain backslashes —
+ * and a later `file.startsWith('tests/')` then never matches, which silently
+ * included the test suite in a "runtime reads" count. Two checks were reporting
+ * test files as production modules. Normalising once here means every path test
+ * downstream is platform-independent, rather than each one remembering to handle
+ * both separators.
+ */
+const SCANNED = walk('.')
+  .filter((f) => /\.(ts|tsx|mjs)$/.test(f))
+  .map((f) => ({ file: f.split('\\').join('/'), code: code10(read(f)) }));
+
+const sinkViolations = [];
+for (const [label, pattern] of SCRIPT_SINKS) {
+  for (const { file, code } of SCANNED) {
+    if (pattern.test(code)) sinkViolations.push(file + ' (' + label + ')');
+  }
+}
+check(
+  'No script-injection sink (dangerouslySetInnerHTML, eval, new Function, innerHTML=, document.write) exists anywhere',
+  sinkViolations.length === 0,
+  sinkViolations.join('; '),
+);
+
+/**
+ * 88. The server never fetches a URL the user supplied. No SSRF surface.
+ *
+ * brief §23. A `fetch(userInput)` is a request-forgery primitive: `http://169.254.169.254/`
+ * and `http://localhost:8080/` are the payloads that matter. Asserting the ABSENCE
+ * is the check, because there is nothing to add — a future feature that needs to
+ * fetch a user URL must satisfy this check deliberately, not inherit a pass.
+ *
+ * The only outbound fetches permitted are to hosts the app itself configured.
+ */
+const SERVER_FETCH_HOSTS = ['maps.googleapis.com'];
+const absoluteFetches = [];
+for (const { file, code } of SCANNED) {
+  if (file.startsWith('tests/')) continue;
+  for (const m of code.matchAll(/fetch\(\s*[`'"](https?:\/\/[^`'"]+)/g)) {
+    const url = m[1];
+    const allowed = SERVER_FETCH_HOSTS.some((h) => url.startsWith('https://' + h));
+    if (!allowed) absoluteFetches.push(file + ' -> ' + url.slice(0, 60));
+  }
+}
+check(
+  'The server fetches no user-supplied URL; outbound fetches are limited to configured hosts (brief §23, SSRF)',
+  absoluteFetches.length === 0,
+  absoluteFetches.join('; '),
+);
+
+/**
+ * 89. No navigation to a user-supplied URL.
+ *
+ * brief §25: `GET /login?redirect=https://malicious-site.com` must not become a
+ * redirect off-origin. Asserted over `location.*`, `window.open`, and
+ * `NextResponse.redirect` with an interpolated value.
+ */
+const redirectViolations = [];
+for (const { file, code } of SCANNED) {
+  if (/location\.(href|assign|replace)\s*=\s*[^\n]*\$\{/.test(code) || /location\.(href|assign|replace)\s*=\s*(searchParams|params|query|req\.)/.test(code)) {
+    redirectViolations.push(file + ' (location.*)');
+  }
+  if (/window\.open\s*\(\s*[^)]*(searchParams|params|query)/.test(code)) {
+    redirectViolations.push(file + ' (window.open)');
+  }
+  if (/NextResponse\.redirect\(\s*(new URL\(\s*request|req\.|\w*[Uu]rl\b)/.test(code)) {
+    redirectViolations.push(file + ' (NextResponse.redirect)');
+  }
+}
+check(
+  'No navigation or redirect is driven by a user-supplied URL (brief §25, open redirect)',
+  redirectViolations.length === 0,
+  redirectViolations.join('; '),
+);
+
+/* ========================================================================== */
+/* Secrets                                                                      */
+/* ========================================================================== */
+
+/**
+ * 90. `GEMINI_API_KEY` is read in exactly one file, and that file is server-only.
+ *
+ * brief §4: the key "must remain server-side. Never expose `GEMINI_API_KEY` through
+ * `NEXT_PUBLIC_*` or browser bundles."
+ *
+ * The project already states the intent in `services/ai/contracts.ts` — "That last
+ * row is why `GEMINI_API_KEY` appears in exactly one file in this repository" — so
+ * this check makes the claim TRUE rather than aspirational. It counts *reads*, and
+ * it excludes the client env module by name so a comment explaining the rule does
+ * not read as a second read.
+ */
+/**
+ * A read is an ENV ACCESSOR CALL, not a mention.
+ *
+ * The first version of this check looked for `process.env.GEMINI_API_KEY` and a
+ * `GEMINI_API_KEY,` shape, and reported ZERO reads — while the key is read eight
+ * times in `lib/env.server.ts`. The real forms are `optionalString('GEMINI_API_KEY')`
+ * and `GEMINI_REQUIRED_VARS = ['GEMINI_API_KEY']`, so a pattern shaped for a
+ * different access idiom reported a clean bill of health for an unread key. The
+ * detection now matches the accessors this codebase actually uses, and the
+ * assertion is strengthened from "one read" to "one read, and that file is
+ * server-only" — because a single read in a client-reachable module would still be
+ * a disclosure.
+ */
+const ENV_ACCESSORS =
+  /(?:optionalString|requiredString|optional|required|env|serverEnv|requireEnv)\(\s*'GEMINI_API_KEY'|'GEMINI_API_KEY'\s*\]/;
+/**
+ * A test that ASSERTS the key is read is not itself a read.
+ *
+ * `tests/unit/api/environment.test.ts` and `integrations.test.ts` both reference
+ * `GEMINI_API_KEY` precisely to prove the server env resolves it. Counting them
+ * would make the check unsatisfiable, and unsatisfiable checks get deleted — which
+ * is the failure mode a security check must be designed to avoid.
+ */
+const geminiReaders = SCANNED.filter(({ file, code }) => !file.startsWith('tests/') && ENV_ACCESSORS.test(code)).map(
+  ({ file }) => file,
+);
+const serverEnvIsServerOnly = /import ['"]server-only['"]/.test(read('lib/env.server.ts'));
+const keyReadOnlyOnServer =
+  // The path is FORWARD-SLASHED because SCANNED normalises separators — comparing
+  // against a backslashed literal fails on every platform except the one it was
+  // written on, which is the worst kind of platform bug: green locally, red in CI.
+  geminiReaders.length === 1 && geminiReaders[0] === 'lib/env.server.ts' && serverEnvIsServerOnly;
+check(
+  'GEMINI_API_KEY is read only by lib/env.server.ts, which is server-only (brief §4, §45)',
+  keyReadOnlyOnServer,
+  geminiReaders.length === 0
+    ? 'no env accessor reads GEMINI_API_KEY — either the key is unreadable at runtime, or this check no longer matches the accessors in use'
+    : geminiReaders.length > 1
+      ? 'read in ' + geminiReaders.length + ' modules: ' + geminiReaders.join(', ')
+      : !serverEnvIsServerOnly
+        ? 'lib/env.server.ts does not import server-only, so nothing stops a client module importing it'
+        : 'read by ' + geminiReaders[0] + ', which is not the server env module',
+);
+
+/**
+ * 91. The client env module reads ONLY `NEXT_PUBLIC_*`.
+ *
+ * A `NEXT_PUBLIC_` prefix is the publish boundary — Next.js inlines those into the
+ * browser bundle at build time. Any non-prefixed read in the client env module is a
+ * secret on its way to a public bundle, and brief §4 forbids it outright.
+ */
+const clientEnvReads = [
+  ...p10EnvClient.matchAll(/(?:required|optional|optionalBoolean|optionalNumber)\(\s*'([A-Z0-9_]+)'/g),
+].map((m) => m[1]);
+const leakedIntoClient = clientEnvReads.filter((name) => !name.startsWith('NEXT_PUBLIC_'));
+check(
+  'lib/env.client.ts reads only NEXT_PUBLIC_* names, so no server secret is inlined into the browser bundle (brief §4)',
+  clientEnvReads.length > 0 && leakedIntoClient.length === 0,
+  clientEnvReads.length === 0
+    ? 'no env accessors found — the pattern this check relies on may have changed'
+    : 'a non-public name is read by the client env module: ' + leakedIntoClient.join(', '),
+);
+
+/* ========================================================================== */
+/* Response headers                                                             */
+/* ========================================================================== */
+
+/**
+ * 92. The non-negotiable response headers are all set, in one place.
+ *
+ * brief §42. `X-Content-Type-Options: nosniff` alone turns a `.txt` served as
+ * `text/html` into a stored-XSS primitive, and `frame-ancestors`/`X-Frame-Options`
+ * is the clickjacking control for a dispatcher confirming an assignment.
+ *
+ * Checked on the MIDDLEWARE rather than on the built response, because the
+ * middleware is the single place they are set and a per-route header added later
+ * cannot silently drop one of these.
+ */
+const REQUIRED_HEADERS = [
+  'Content-Security-Policy',
+  'X-Frame-Options',
+  'X-Content-Type-Options',
+  'Referrer-Policy',
+  'Permissions-Policy',
+  'Strict-Transport-Security',
+  'Cross-Origin-Opener-Policy',
+  'Cross-Origin-Resource-Policy',
+];
+const missingHeaders = REQUIRED_HEADERS.filter((h) => !new RegExp("'" + h.replace(/-/g, '\\-') + "'").test(p10Middleware));
+check(
+  'Every non-negotiable security response header is set by the middleware (brief §42, docs/10 §15)',
+  missingHeaders.length === 0,
+  missingHeaders.length === 0 ? '' : 'not set: ' + missingHeaders.join(', '),
+);
+
+/**
+ * 93. `script-src` carries no `unsafe-inline`, and `unsafe-eval` sits in a
+ * dev-only ternary arm.
+ *
+ * A `script-src 'unsafe-inline'` CSP does not mitigate XSS — it disables the
+ * mitigation — and `unsafe-eval` is the most common way a bundle ends up executing
+ * attacker-supplied source. Both are genuinely required in development (Fast
+ * Refresh and the dev overlay), and a dev-only allowance cannot affect a production
+ * deployment, so the assertion is about the TERNARY, not about the header text: a
+ * check that merely looked for the string `unsafe-eval` would fail for the correct
+ * implementation and pass for one that emits it unconditionally.
+ */
+/**
+ * Scanned with comments STRIPPED.
+ *
+ * The first run reported a violation in a file that has none: the middleware's own
+ * comment reads "far less dangerous than `script-src 'unsafe-inline'`" in the
+ * explanation of why `style-src` may use it. The phrase appears because the codebase
+ * documents the rule it follows — so a scan that reads comments as code will fail
+ * correct code and, to make it pass, someone will delete the explanation.
+ *
+ * This is the same lesson as three earlier mutation tests in this project: comments
+ * are where a prohibition gets DESCRIBED, which is exactly why they must be removed
+ * before a prohibition is scanned for.
+ */
+const middlewareCode = code10(p10Middleware);
+const unsafeInlineInScriptSrc = /script-src[^\n]*'unsafe-inline'/.test(middlewareCode);
+/** The dev arm supplies the allowance; the production arm supplies nothing. */
+const evalArmIsDevOnly =
+  /isDev \? "'unsafe-eval'" : ''/.test(middlewareCode) || /\$\{isDev \? "'unsafe-eval'" : ''\}/.test(middlewareCode);
+check(
+  "script-src has no 'unsafe-inline', and 'unsafe-eval' sits only in the development arm (brief §42)",
+  !unsafeInlineInScriptSrc && evalArmIsDevOnly,
+  unsafeInlineInScriptSrc
+    ? "script-src allows 'unsafe-inline', which disables the CSP's XSS mitigation"
+    : "'unsafe-eval' is not confined to a development-only ternary arm",
+);
+}
 
 const pad = Math.max(...results.map((r) => r.label.length));
 let failed = 0;

@@ -2554,3 +2554,58 @@ Every FR row in [01](./01_PRODUCT_REQUIREMENTS_DOCUMENT.md) §6 has at least one
 ---
 
 **End of document 18.** Amendments must reference the anchor document they change, and must not introduce a field, endpoint, error code, environment variable, or collection that is not already defined in [07](./07_DATABASE_SCHEMA.md), [08](./08_API_SPECIFICATION.md), [16](./16_ERROR_HANDLING.md), [17](./17_VALIDATION_RULES.md), or [21](./21_ENVIRONMENT_VARIABLES.md).
+
+---
+
+## Phase 10 test and check additions (2026-09-30)
+
+### Counts
+
+| | Before | After |
+| --- | :-: | :-: |
+| Vitest | 1,558 / 46 files | **1,573 / 47 files** |
+| Security checks | 116 | **135** |
+| Check mutations proven | 11 caught | **27 caught** (16 new) |
+
+### New suite: `tests/unit/realtime/identity.test.ts` (15 tests)
+
+Covers the listener-teardown rule across a whole session: a token refresh does not
+tear down; sign-out and account switch do; the first resolution does not; a full
+session tears down exactly once; three consecutive account switches each close the
+right uid; sign-out-then-back-in does not close the *new* user's listeners; two
+identity watches are independent.
+
+The last group proves the teardown has the effect it claims by counting
+`detach()` calls on the real registry. **A registry that cleared its map without
+calling `detach` would report zero open and still hold every live Firestore
+subscription** — the bug wearing a passing assertion.
+
+### New checks: 19, and all 16 mutations caught
+
+The distinguishing property of this phase's checks is that each was **proven to fail**
+when its target is broken. Four of them were passing for the wrong reason, and the
+mutation testing is what found them:
+
+| Check | The bug it was hiding |
+| --- | --- |
+| C90 | matched a different access idiom than the codebase uses; reported **zero** reads for a key read eight times |
+| C78/C79 | iterated route option blocks without pairing them to a method, so a correct route failed a check written to catch an incorrect one |
+| C93 | scanned with comments in, and flagged the codebase's own explanation of why `style-src` may use `unsafe-inline` |
+| C84 | asserted the Firestore verbs `read`/`query`; the rules use `get`/`list`, so the pattern never matched |
+
+### The standing rule, now four phases old
+
+**A check that cannot see its target reports success.** Three of sixteen "misses" in
+this phase were *invalid mutations* rather than broken checks — a "removal" that kept
+the substring, a `String.replace` that hit the first of several occurrences, and a
+file with two access sites where only one was changed. A mutation that does not change
+behaviour cannot fail a check, so every mutation now asserts that it altered the
+target before its result is believed.
+
+### Not run
+
+- **Firestore/Storage rules against the emulator.** Requires a JDK; not installed. The
+  matrix to assert is in `docs/SECURITY_AUDIT_REPORT.md` §9.1.
+- **E2E.** Covered by unit and integration tests over mocked boundaries.
+- **Browser, responsive (7 breakpoints), accessibility.** No browser available.
+- **Performance under load.** No measurement; bounds are unit-tested.
