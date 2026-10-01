@@ -44,6 +44,7 @@
     "firebase": "^11.10.0",
     "firebase-admin": "^13.10.0",
     "lucide-react": "^0.544.0",
+    "mapbox-gl": "^3.32.0",
     "next": "^15.5.0",
     "ngeohash": "^0.6.3",
     "react": "^19.1.0",
@@ -57,6 +58,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.7",
     "@tailwindcss/postcss": "^4.1.13",
+    "@types/mapbox-gl": "^3.4.1",
     "@types/node": "^22.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",

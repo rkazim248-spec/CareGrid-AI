@@ -16,6 +16,21 @@ import { URGENCY_META } from '@/config';
 import type { Analytics } from '@/types';
 
 /**
+ * Seconds -> whole minutes, or the no-data sentence.
+ *
+ * `docs/14 §2.1`: "A metric whose inputs are absent is `null`, never `0`." The
+ * arithmetic form of this bug is easy to miss — `Math.round(null / 60)` is `0`, not
+ * `NaN`, so a nullable percentile silently rendered as "0 min". That is the same
+ * false claim the KPI grid was fixed for in Phase 9, in a second place, which is
+ * why the guard is a named helper rather than an inline ternary.
+ */
+function minutes(seconds: number | null): string {
+  return seconds === null ? 'Not enough data' : `${Math.round(seconds / 60)} min`;
+}
+
+
+
+/**
  * ResponseChart — two panels' worth of response-time data in one card
  * (docs/04 §13.13 "response histogram" and "p50/p90 by urgency").
  *
@@ -108,10 +123,10 @@ export default function ResponseChart({
                 {URGENCY_META[row.urgency].label}
               </th>
               <td className="py-1.5 pr-3 tabular text-secondary">
-                {Math.round(row.p50Sec / 60)} min
+                {minutes(row.p50Sec)}
               </td>
               <td className="py-1.5 tabular text-secondary">
-                {Math.round(row.p90Sec / 60)} min
+                {minutes(row.p90Sec)}
               </td>
             </tr>
           ))}

@@ -91,7 +91,18 @@ const eslintConfig = [
       // instead of the config looks like the fix worked, right up until the
       // worktree is recreated and the errors return.
       '.kilo/**',
-      '**/.git/**',
+      // Same class as `.kilo/**`, different agent tooling. `.claude/skills/**` is a
+      // library of third-party skill scripts that tooling installs into the
+      // working directory. They are plain CommonJS with `require()`, so
+      // `no-require-imports` fires 15 times on files nobody in this repository
+      // wrote, and `npm run verify` goes red for a reason unrelated to this tree.
+      //
+      // The fix is to scope the linter to the project, NOT to relax the rule. That
+      // rule must keep firing in `app/`, `lib/`, `services/` and `tests/`, where a
+      // `require()` in a TS file is a real problem. Widening its exception to those
+      // paths would remove a live control to accommodate non-project code.
+      '.claude/**',
+      '.freebuff/**',      '**/.git/**',
     ],
   },
   ...compat.extends('next/core-web-vitals', 'next/typescript'),

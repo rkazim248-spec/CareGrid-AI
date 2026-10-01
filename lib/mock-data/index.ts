@@ -1246,10 +1246,10 @@ export const MOCK_ANALYTICS: Analytics = {
     { label: 'Over 4 h', count: 4 },
   ],
   byUrgency: [
-    { urgency: 'critical', p50Sec: 180, p90Sec: 420 },
-    { urgency: 'high', p50Sec: 640, p90Sec: 1500 },
-    { urgency: 'medium', p50Sec: 2280, p90Sec: 5400 },
-    { urgency: 'low', p50Sec: 5400, p90Sec: 10800 },
+    { urgency: 'critical', p50Sec: 180, p90Sec: 420, count: 0 },
+    { urgency: 'high', p50Sec: 640, p90Sec: 1500, count: 0 },
+    { urgency: 'medium', p50Sec: 2280, p90Sec: 5400, count: 0 },
+    { urgency: 'low', p50Sec: 5400, p90Sec: 10800, count: 0 },
   ],
   riskZones: [
     {

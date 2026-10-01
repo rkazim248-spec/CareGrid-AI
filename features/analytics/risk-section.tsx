@@ -26,6 +26,8 @@ import {
 import { CATEGORY_META } from '@/config';
 import { formatCount, formatDistance, formatRelative } from '@/lib/format';
 import type { RiskZone } from '@/types';
+import { RiskMap } from '@/features/analytics/risk-map';
+import { RISK_HONESTY_STATEMENT } from '@/config/analytics';
 
 /**
  * RiskSection — the risk-zone panel (docs/04 §13.13).
@@ -73,11 +75,21 @@ const SEVERITY: Record<RiskZone['severity'], SeverityStyle> = {
   },
 };
 
-const DEMO_NOTICE =
-  'Demo data. These figures are fabricated for this UI shell and describe no real city.';
+/**
+ * `docs/14 §6.8`, rendered VERBATIM.
+ *
+ * The constant is imported rather than retyped so the copy lives in exactly one place
+ * and security check C61 asserts that place matches the document character for
+ * character. A paraphrase is the single change that would turn a descriptive score into a
+ * forecast in the reader’s mind, so it is not written here at all.
+ */
+const RISK_DISCLOSURE = RISK_HONESTY_STATEMENT;
 
-const PLACEHOLDER_NOTE =
-  'A geographic heatmap is not built yet. Until it is, these zones are shown as a table of the exact numbers a heatmap would be drawn from, so the data is reviewable without a picture.';
+/** Factual, and deliberately about the PAST. brief §20 lists the phrasings to avoid. */
+const ZONE_DESCRIPTION =
+  'Cells where reported incidents have concentrated over the selected period. Each score ' +
+  'combines how many reports there were, how severe they were, and how recently the last ' +
+  'one was.';
 
 export function RiskSection({ zones }: { zones: readonly RiskZone[] }) {
   return (
@@ -86,10 +98,10 @@ export function RiskSection({ zones }: { zones: readonly RiskZone[] }) {
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="flex min-w-0 flex-col gap-1">
             <CardTitle className="text-base">Risk zones</CardTitle>
-            <CardDescription>{PLACEHOLDER_NOTE}</CardDescription>
+            <CardDescription>{ZONE_DESCRIPTION}</CardDescription>
           </div>
           <Badge variant="muted" size="sm" className="shrink-0">
-            Demo data
+            Historical density
           </Badge>
         </div>
       </CardHeader>
@@ -102,17 +114,11 @@ export function RiskSection({ zones }: { zones: readonly RiskZone[] }) {
               <Info className="size-3.5" aria-hidden="true" />
               Read this before quoting a number
             </AlertTitle>
-            <AlertDescription>{DEMO_NOTICE}</AlertDescription>
+            <AlertDescription>{RISK_DISCLOSURE}</AlertDescription>
           </div>
         </Alert>
 
-        <div className="flex min-h-[120px] items-center justify-center rounded-card border border-dashed border-default bg-inset p-4 text-center">
-          <p className="max-w-[52ch] text-xs text-muted">
-            Heatmap placeholder. A future build draws these scores as shaded cells over a map at
-            true radius; this shell deliberately does not, because a picture would imply a spatial
-            precision that a fabricated score does not have.
-          </p>
-        </div>
+        <RiskMap zones={zones} />
 
         <Table>
           <TableCaption className="sr-only">

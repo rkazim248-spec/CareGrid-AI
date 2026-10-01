@@ -306,3 +306,45 @@ function clampNumber(name: string, fallback: number, min: number, max: number): 
   return Math.min(max, Math.max(min, parsed));
 }
 
+/**
+ * The Mapbox browser token, for `features/analytics/risk-map.tsx`.
+ *
+ * A Mapbox PUBLIC token is designed for the browser — it is restricted by HTTP
+ * referrer and by the specific APIs enabled on it, and it grants no write access.
+ * It is NOT a secret and deliberately carries the `NEXT_PUBLIC_` prefix, which is
+ * exactly what makes it publishable. The contrast with `IMAGEKIT_PRIVATE_KEY` and
+ * `GEMINI_API_KEY` is the whole point: those carry no prefix because they are
+ * server-only.
+ *
+ * Distinct from `getPublicMapsConfig()`, which describes the Google Maps key that
+ * nothing currently loads.
+ */
+export type PublicMapboxConfig = {
+  /** `null` when unset, so the caller can render a missing-token state. */
+  readonly accessToken: string | null;
+  /** `docs/25`: the style id, not a URL. `dark-v11` matches the operations theme. */
+  readonly style: string;
+  readonly problem: string | null;
+};
+
+let cachedMapbox: PublicMapboxConfig | null = null;
+
+export function getPublicMapboxConfig(): PublicMapboxConfig {
+  if (cachedMapbox) return cachedMapbox;
+  const token = optional('NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN', '');
+  cachedMapbox = {
+    accessToken: token === '' ? null : token,
+    style: optional('NEXT_PUBLIC_MAP_STYLE_ID', 'mapbox://styles/mapbox/dark-v11'),
+    problem:
+      token === ''
+        ? 'The map is not configured: NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN is not set. Risk ' +
+          'zones are still listed below, which is the documented fallback.'
+        : null,
+  };
+  return cachedMapbox;
+}
+
+/** `true` when the Mapbox layer may load. The risk TABLE renders either way. */
+export function isMapboxConfigured(): boolean {
+  return getPublicMapboxConfig().accessToken !== null;
+}

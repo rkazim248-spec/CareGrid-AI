@@ -28,6 +28,7 @@ import { RangeControl } from '@/features/analytics/range-control';
 import { ResponderTable } from '@/features/analytics/responder-table';
 import { RiskSection } from '@/features/analytics/risk-section';
 import { useResolvedSession } from '@/components/providers/session-provider';
+import { apiFetch } from '@/lib/api/client';
 
 /**
  * AnalyticsView — `/analytics` (docs/04 §13.13, FR-110…FR-118).
@@ -61,14 +62,126 @@ const DEMO_NOTICE =
 /** Region names come from a constant, never a literal in JSX (docs/04 §5.2). */
 const CHARTS_REGION = 'Charts';
 
+/**
+ * The single analytics read, with the four states brief §16 requires.
+ *
+ * `MOCK_ANALYTICS` is NOT a fallback for a failed request. A dispatcher reading a
+ * trend chart cannot tell fabricated numbers from measured ones, and brief §11
+ * forbids exactly that substitution in its more dangerous form. The demo notice
+ * renders only while `isDemo` is true, so the two can never be confused.
+ */
+type AnalyticsState =
+  | { readonly kind: 'loading' }
+  | { readonly kind: 'error'; readonly message: string }
+  | { readonly kind: 'ready'; readonly data: Analytics; readonly isDemo: boolean };
+
+export function useAnalytics(range: Analytics["range"]): AnalyticsState {
+  const [state, setState] = React.useState<AnalyticsState>({ kind: 'loading' });
+
+  // A string key, so changing one filter does not tear down an in-flight request
+  // for a filter that did not change, and an unrelated re-render refetches nothing.
+  const key = [range.from, range.to, range.granularity].join("|");
+
+  React.useEffect(() => {
+    let live = true;
+    const controller = new AbortController();
+    setState({ kind: 'loading' });
+
+    // `apiFetch` builds the query and unwraps the `{ data }` envelope, so the
+    // handler returns exactly what the view consumes.
+    apiFetch<Analytics>('/api/analytics', {
+      query: { from: range.from, to: range.to },
+      signal: controller.signal,
+    })
+      .then((data: Analytics) => {
+        if (live) setState({ kind: 'ready', data, isDemo: false });
+      })
+      .catch((error: unknown) => {
+        if (!live) return;
+        // An abort is what happens when the FILTERS change — it is the expected
+        // outcome, not a failure. Without this guard, picking another date range
+        // would flash "Analytics are unavailable" at a user who did nothing wrong.
+        if (error instanceof DOMException && error.name === 'AbortError') return;
+        if (error instanceof Error && error.name === 'AbortError') return;
+        setState({
+          kind: 'error',
+          message: error instanceof Error ? error.message : 'Analytics are unavailable right now.',
+        });
+      });
+
+    return () => {
+      live = false;
+      // brief §7: do not leave in-flight analytics reads running after the
+      // filters they were for have changed. Each one is a bounded 500-document
+      // scan, so a user clicking through ranges would otherwise pay for every
+      // intermediate one.
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  return state;
+}
+
 export function AnalyticsView() {
 
   const { role } = useResolvedSession();
   const [range, setRange] = React.useState<Analytics['range']>(MOCK_ANALYTICS.range);
 
-  const analytics = MOCK_ANALYTICS;
+  const state = useAnalytics(range);
   const canExport = role === 'dispatcher' || role === 'admin';
   const showResponders = canExport;
+
+  /**
+   * brief §16: never a blank screen, never an infinite spinner.
+   *
+   * A skeleton says "there will be numbers here", which a bare spinner does not and
+   * a blank area actively denies. `aria-busy` plus `aria-live` so a screen-reader
+   * user is told the load started rather than hearing nothing.
+   */
+  if (state.kind === 'loading') {
+    return (
+      <div className="flex flex-col gap-6" aria-busy="true" aria-live="polite">
+        <PageHeader
+          title="Analytics"
+          description="Operational volume, category mix, response times, and risk zones."
+        />
+        <p className="text-sm text-secondary">Loading analytics…</p>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="h-24 animate-pulse rounded-md border border-subtle bg-surface-2"
+              aria-hidden="true"
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  /**
+   * brief §11: an honest failure state, with NO fallback to demo figures.
+   */
+  if (state.kind === 'error') {
+    return (
+      <div className="flex flex-col gap-6">
+        <PageHeader
+          title="Analytics"
+          description="Operational volume, category mix, response times, and risk zones."
+        />
+        <Alert tone="warning">
+          <AlertIcon tone="warning" />
+          <div>
+            <AlertTitle>Analytics are unavailable</AlertTitle>
+            <AlertDescription>{state.message}</AlertDescription>
+          </div>
+        </Alert>
+      </div>
+    );
+  }
+
+  const analytics = state.data;
 
 
   return (
@@ -83,16 +196,23 @@ export function AnalyticsView() {
         }
       />
 
-      <Alert tone="neutral">
-        <AlertIcon tone="neutral" />
-        <div>
-          <AlertTitle className="flex items-center gap-1.5">
-            <Info className="size-3.5" aria-hidden="true" />
-            About these numbers
-          </AlertTitle>
-          <AlertDescription>{DEMO_NOTICE}</AlertDescription>
-        </div>
-      </Alert>
+      {/*
+       * The notice asserts "these figures are fabricated". Once a real response
+       * arrives that stops being true, and leaving it up would be a lie in the
+       * OTHER direction — a reader told figures are demo when they are not.
+       */}
+      {state.isDemo ? (
+        <Alert tone="neutral">
+          <AlertIcon tone="neutral" />
+          <div>
+            <AlertTitle className="flex items-center gap-1.5">
+              <Info className="size-3.5" aria-hidden="true" />
+              About these numbers
+            </AlertTitle>
+            <AlertDescription>{DEMO_NOTICE}</AlertDescription>
+          </div>
+        </Alert>
+      ) : null}
 
       <RangeControl range={range} onRangeChange={setRange} canExport={canExport} />
 

@@ -62,6 +62,12 @@ next-env.d.ts
 # otherwise add a duplicate of every source file to the index.
 .kilo/
 
+# Agent tooling installed into the working directory. Not project source, and not
+# committable — a skill library is not a dependency of CareGrid AI.
+.claude/
+.freebuff/
+skills-lock.json
+
 # Editor / OS
 .DS_Store
 Thumbs.db

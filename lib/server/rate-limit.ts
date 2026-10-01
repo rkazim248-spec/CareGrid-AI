@@ -114,6 +114,19 @@ export const RATE_LIMIT_RULES: Readonly<Record<string, RateLimitRule>> = {
   'me.update': { routeKey: 'me.update', limit: 30, windowSec: 3600, subject: 'uid' },
   'auth.event': { routeKey: 'auth.event', limit: 30, windowSec: 3600, subject: 'uid' },
   'auth.me': { routeKey: 'auth.me', limit: 120, windowSec: 60, subject: 'uid' },
+  /**
+   * 60/min per uid. `docs/10 §17.1`.
+   *
+   *   Analytics is the most expensive read in the application: one request scans up to
+   *   `LIVE_SCAN_CAP` (500) documents and aggregates them on the server, because
+   *   Firestore offers no `COUNT(*)`/`GROUP BY` (`docs/14 §3.1`). Left unbounded it is
+   *   the cheapest available way for a signed-in user to burn the read budget.
+   *
+   *   60/min is far above how often a dashboard re-requests or a person changes a
+   *   filter, and far below anything that would make the scan a denial-of-service.
+   */
+  'analytics.read': { routeKey: 'analytics.read', limit: 60, windowSec: 60, subject: 'uid' },
+
   'admin.systemHealth': { routeKey: 'admin.systemHealth', limit: 30, windowSec: 60, subject: 'uid' },
   'ai.triage': { routeKey: 'ai.triage', limit: 20, windowSec: 3600, subject: 'uid' },
 

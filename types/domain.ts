@@ -422,7 +422,13 @@ export type Analytics = {
   byCategory: { category: IncidentCategory; count: number; critical: number }[];
   trend: { bucket: string; created: number; resolved: number; critical: number }[];
   responseBuckets: { label: string; count: number }[];
-  byUrgency: { urgency: Urgency; p50Sec: number; p90Sec: number }[];
+  /**
+   * `p50Sec` / `p90Sec` are NULLABLE for the reason `MaybeNumber` exists: a
+   * percentile over zero qualifying records is unmeasured, not zero. The
+   * `count` is exposed alongside so a percentile drawn from three records is
+   * visibly a sample of three.
+   */
+  byUrgency: { urgency: Urgency; p50Sec: MaybeNumber; p90Sec: MaybeNumber; count: number }[];
   riskZones: RiskZone[];
   responders: {
     uid: string;

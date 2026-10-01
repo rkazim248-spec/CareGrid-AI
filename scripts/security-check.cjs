@@ -226,9 +226,67 @@ check('Every secret in .env.example is empty', populated.length === 0, populated
 
 const gitignore = existsSync(join(ROOT, '.gitignore')) ? read('.gitignore') : '';
 const ignored = /^\.env\*?\.local/m.test(gitignore) || /^\.env$/m.test(gitignore) || /^\.env\*/m.test(gitignore);
-const localAbsent = !existsSync(join(ROOT, '.env.local'));
+/**
+ * Is `.env.local` TRACKED by git?
+ *
+ * Phase 10 asserted the file was ABSENT from disk, because during Phases 1-10 there
+ * were no credentials and no `.env.local`. That conflated two different properties.
+ * The moment a developer puts real credentials in it — which is the entire point of
+ * the integration phase — the check failed for the correct, intended state.
+ *
+ * The property that matters is TRACKSHIP, and git is asked directly rather than
+ * inferred from the filesystem. This is strictly stronger than the old assertion: a
+ * file can be absent today and committed tomorrow, whereas `git ls-files` returning
+ * nothing is the invariant itself. The companion "git-ignored" check above is kept,
+ * because that is what stops an untracked file being added by accident.
+ */
+function isTrackedByGit(relativePath) {
+  try {
+    const listed = execFileSync('git', ['ls-files', '--error-unmatch', relativePath], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return listed.trim().length > 0;
+  } catch {
+    // `--error-unmatch` exits non-zero when the path is NOT tracked, which is the
+    // answer we want.
+    return false;
+  }
+}
+
+const localExists = existsSync(join(ROOT, '.env.local'));
+const localTracked = localExists ? isTrackedByGit('.env.local') : false;
 check('.env.local is git-ignored', ignored);
-check('.env.local is not committed', localAbsent, localAbsent ? '' : '.env.local exists in the tree');
+check(
+  '.env.local is not committed to git',
+  !localTracked,
+  localTracked
+    ? '.env.local is TRACKED by git — every credential in it is now in the object store and must be rotated'
+    : localExists
+      ? 'ok — .env.local exists locally and is untracked (the correct state when working with real credentials)'
+      : '',
+);
+
+/**
+ * The local file must not leak into a build or a diff.
+ *
+ * A second, independent assertion on top of the git ones, because the whole harm of
+ * a committed secret file is that it travels. If the file is untracked AND ignored,
+ * it cannot be in a commit, a tarball of the tree, or a CI checkout.
+ */
+check(
+  '.env.local is excluded from the tracked file set',
+  (() => {
+    try {
+      const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      return !tracked.split(/\r?\n/).some((line) => /^\.env(\.|$)/.test(line.trim()) && !line.includes('.example'));
+    } catch {
+      // Outside a git repo the ignore check above is the only available signal, and
+      // it is not weakened by this returning true.
+      return true;
+    }
+  })(),
+);
 
 /**
  * EVERY env filename that must be ignored, actually is — checked by BEHAVIOUR.
