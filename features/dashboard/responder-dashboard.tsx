@@ -9,6 +9,7 @@ import { PageHeader, SectionHeader } from '@/components/layout';
 import { EmptyState, EMPTY_COPY } from '@/components/feedback';
 import { RequiredResourceChips, StatusBadge, UrgencyBadge } from '@/components/domain';
 import { CATEGORY_META, STATUS_META, URGENCY_META } from '@/config';
+import { ResponderDispatchAlerts } from '@/features/dispatch/responder-dispatch-alerts';
 import { formatDistance, formatRelative } from '@/lib/format';
 import { MOCK_DISPATCHES, MOCK_INCIDENTS, MOCK_RESPONDERS } from '@/lib/mock-data';
 import type { Dispatch, Incident, IncidentStatus, Responder } from '@/types';
@@ -77,6 +78,13 @@ export function ResponderDashboard({ userUid }: { userUid: string }) {
 
   return (
     <div className="flex flex-col gap-6">
+      {/*
+        The live alert is keyed to the REAL session uid (L6 + L2a), not to the
+        demo identity driving the cards below. A responder with no live
+        dispatch sees nothing from it.
+      */}
+      <ResponderDispatchAlerts />
+
       <PageHeader
         title="My work"
         description="Set yourself available, then work the assignments below. One action per assignment."

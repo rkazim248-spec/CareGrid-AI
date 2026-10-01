@@ -187,6 +187,35 @@ export const ERROR_STATUS = {
    */
   NOTIFICATION_DISABLED: 422,
   /**
+   * Phase 14. A body tried to set a field that is SERVER-OWNED on the AI review
+   * path — `aiConfidence`, `aiRuns`, `triageSource`, or any other record of what
+   * the model actually returned.
+   *
+   * `403` and not `422`, matching the existing `ROLE_ESCALATION_GUARD`: this is
+   * the same class of attack as a body carrying `role` on `/api/me/bootstrap`.
+   * The request was well-formed, but it asked for something no caller may do, and
+   * a `422` would invite a retry of the same thing.
+   */
+  AI_RESULT_IMMUTABLE: 403,
+  /**
+   * Phase 14. The incident is not in the review queue.
+   *
+   * `422`: the route and the id are both real, and the DOMAIN refused the value
+   * because `aiConfidence` is at or above the threshold. The caller can fix it by
+   * reviewing through the incident route instead.
+   */
+  NOT_IN_REVIEW_QUEUE: 422,
+  /**
+   * Phase 14. A reviewer has already recorded a decision for this incident.
+   *
+   * `409` STATE CONFLICT, not `403`: the reviewer is allowed to do this, the
+   * world has moved under them, and the correct response is to read the recorded
+   * decision rather than to overwrite it. This is the status that makes
+   * "do not silently overwrite" enforceable — a second decision is a conflict the
+   * client must surface, not a silent last-write-wins.
+   */
+  REVIEW_ALREADY_RECORDED: 409,
+  /**
    * A capability exists and the caller has it, but the deployment has the
    * corresponding feature switched off (`ENABLE_RISK_ZONES`,
    * `ENABLE_VOICE_REPORTING`). 422 rather than 404: the route is real, the

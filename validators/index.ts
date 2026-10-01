@@ -24,9 +24,10 @@
  * WHAT IS AND IS NOT EXPORTED IN PHASE 3
  * ---------------------------------------------------------------------------
  * Exported: the account schemas (Phase 2), the shared primitives, the query
- * primitives, and the AI probe. NOT exported: `incident`, `dispatch`,
- * `responder`, `notification`, `upload`, `admin`, or `config` — those have no
- * route yet, and a schema with no caller is dead code (docs/32 MUST 14).
+ * primitives, the AI probe, and the admin surface (Phase 14). NOT exported:
+ * `incident`, `dispatch`, `responder`, `notification`, `upload`, or `config` —
+ * those have no route yet, and a schema with no caller is dead code
+ * (docs/32 MUST 14).
  */
 
 /* --- identity and account ------------------------------------------------- */
@@ -116,3 +117,33 @@ export {
   type AiTriageProbeBody,
   type AiTriageProbeResponse,
 } from '@/validators/ai';
+
+/* --- the admin + operations surface: docs/22 §3, Phase 14 ---------------- */
+export {
+  adminAuditLogQuerySchema,
+  adminAuditLogResponseSchema,
+  adminChangeAccountStateBodySchema,
+  adminChangeRoleBodySchema,
+  adminIncidentDetailQuerySchema,
+  adminIncidentListQuerySchema,
+  adminIncidentStatusBodySchema,
+  adminOverviewQuerySchema,
+  adminOverviewResponseSchema,
+  adminPaginationSchema,
+  adminProvidersQuerySchema,
+  adminProvidersResponseSchema,
+  adminResponderDetailQuerySchema,
+  adminResponderListQuerySchema,
+  adminReviewDecisionBodySchema,
+  adminReviewQueueQuerySchema,
+  adminUserListQuerySchema,
+  aiReviewSchema,
+  providerHealthSchema,
+  type AdminAuditLogResponse,
+  type AdminOverviewResponse,
+  type AdminProvidersResponse,
+  type AdminReviewDecisionBody,
+  type AiReviewRecord,
+  type ReviewDecision,
+  type ReviewDispatchOutcome,
+} from '@/validators/admin';

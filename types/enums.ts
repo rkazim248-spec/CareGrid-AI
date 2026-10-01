@@ -139,6 +139,29 @@ export const SAFETY_FLAGS = [
 ] as const;
 export type SafetyFlag = (typeof SAFETY_FLAGS)[number];
 
+/**
+ * How an AI triage run ended. `docs/09 §5`.
+ *
+ * Promoted out of `AiAnalysis.outcome` in Phase 14 so the admin review queue can
+ * offer `?runOutcome=` as a filter without copying the union by hand. A
+ * hand-copied list is the exact thing that drifts: it keeps working after a value
+ * is added to the type, and the filter then silently omits the new state from
+ * every report, which reads as "nothing happened" rather than "the filter is
+ * stale".
+ *
+ * `blocked` is the value most worth keeping distinct from `error`: it is a refusal
+ * (safety policy), not a fault, and collapsing the two makes a safety refusal look
+ * like an outage in the health panel.
+ */
+export const AI_RUN_OUTCOMES = [
+  'success',
+  'validation_failed',
+  'timeout',
+  'error',
+  'blocked',
+] as const;
+export type AiRunOutcome = (typeof AI_RUN_OUTCOMES)[number];
+
 /** FR-054. `resolved` requires one of these. */
 export const RESOLUTION_CODES = [
   'resolved_safe',
@@ -200,6 +223,11 @@ export const NOTIFICATION_TYPES = [
   'responder_verified',
   'role_changed',
   'account_suspended',
+  'dispatch_received',
+  'dispatch_accepted',
+  'dispatch_declined',
+  'incident_update',
+  'system',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
@@ -264,7 +292,53 @@ export const AUDIT_ACTIONS = [
   'notification.sent',
   'analytics.recompute',
   'maintenance.run',
+  /**
+   * Phase 14. A HUMAN reviewed an AI triage result and recorded a decision.
+   *
+   * ---------------------------------------------------------------------------
+   * WHY THIS IS NOT `incident.update`
+   * ---------------------------------------------------------------------------
+   * Because the reviewer does not change the AI's answer — the AI result is
+   * immutable history and the decision is recorded ALONGSIDE it. Folding this
+   * into `incident.update` would make the two indistinguishable in the audit log a
+   * year from now, and "the model was low confidence and a human disagreed" is a
+   * materially different fact from "someone edited a field".
+   *
+   * It is also deliberately separate from `auth.*`: a review is an authorised
+   * judgement, not an authorisation event.
+   */
+  'ai.review',
+  /**
+   * Phase 14. A reviewer dismissed an AI triage result as a false positive —
+   * there was nothing for the model to be wrong about, so no correction exists.
+   */
+  'ai.review.dismissed',
 ] as const;
+/**
+ * What an audit entry is ABOUT. Phase 14.
+ *
+ * Promoted to a runtime array so the admin audit-log filter can offer
+ * `?entityType=` without hand-copying `AuditInput.entityType`, which is the same
+ * drift the `AI_RUN_OUTCOMES` promotion prevents. The union and the filter are
+ * now the same declaration.
+ *
+ * `'aiReview'` is separate from `'incident'` even though a review belongs to an
+ * incident: a reviewer query must find every review regardless of which incident
+ * it was on, and reusing `'incident'` would make the filter answer a question
+ * nobody asked.
+ */
+export const AUDIT_ENTITY_TYPES = [
+  'incident',
+  'user',
+  'responder',
+  'dispatch',
+  'config',
+  'auth',
+  'notification',
+  'aiReview',
+] as const;
+export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[number];
+
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
 /* -------------------------------------------------------------------------- */

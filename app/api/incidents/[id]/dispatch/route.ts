@@ -27,12 +27,17 @@
 import { withRequest } from '@/lib/server/route';
 import { requireCapability } from '@/lib/server/permissions';
 import { AppError } from '@/lib/server/errors';
+import { adminConfigurationReason, getAdminDb } from '@/lib/server/firebase-admin';
+import { COLLECTIONS } from '@/config/collections';
+import { categoryLabel, resourceName, URGENCY_META } from '@/config';
+import { formatClock, formatDistance } from '@/lib/format';
 import {
   NOTIFICATION_COPY,
   assignResponder,
-  notifyInApp,
   recipientsForEvent,
 } from '@/services/dispatch';
+import { deliverToRecipients } from '@/services/notifications';
+import type { IncidentCategory, Urgency } from '@/types';
 import {
   assignResponderBodySchema,
   assignResponseSchema,
@@ -41,6 +46,68 @@ import {
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/* ========================================================================== */
+/* Responder-alert copy inputs — brief §3                                      */
+/* ========================================================================== */
+
+/**
+ * Read the incident fields the §3 alert quotes: category, urgency, location,
+ * required resources, time reported.
+ *
+ * AFTER the commit and best-effort. A failed read downgrades the alert to the
+ * short copy rather than failing an assignment that already succeeded (FR-107) —
+ * and a responder told "you were assigned" who opens the app is better served
+ * than one told nothing at all.
+ */
+async function readIncidentForAlert(
+  incidentId: string,
+): Promise<{
+  category: IncidentCategory;
+  urgency: Urgency;
+  placeName: string | null;
+  resources: readonly { resourceId: string; quantity: number }[];
+  createdAt: string;
+} | null> {
+  if (adminConfigurationReason() !== null) return null;
+  try {
+    const snap = await getAdminDb().collection(COLLECTIONS.incidents).doc(incidentId).get();
+    if (!snap.exists) return null;
+    const data = snap.data() as
+      | Partial<{
+          category: IncidentCategory;
+          urgency: Urgency;
+          location: { placeName: string | null } | null;
+          requiredResources: { resourceId: string; quantity: number }[];
+          createdAt: string;
+        }>
+      | undefined;
+    if (
+      typeof data?.category !== 'string' ||
+      typeof data.urgency !== 'string' ||
+      typeof data.createdAt !== 'string'
+    ) {
+      return null;
+    }
+    return {
+      category: data.category,
+      urgency: data.urgency,
+      placeName: data.location?.placeName ?? null,
+      resources: data.requiredResources ?? [],
+      createdAt: data.createdAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** `First aid kit ×2, Fire extinguisher ×1` — or the honest `None recorded`. */
+function resourcesSummary(
+  resources: readonly { resourceId: string; quantity: number }[],
+): string {
+  if (resources.length === 0) return 'None recorded';
+  return resources.map((r) => `${resourceName(r.resourceId)} ×${r.quantity}`).join(', ');
+}
 
 export const POST = withRequest(
   {
@@ -78,18 +145,22 @@ export const POST = withRequest(
     });
 
     /* ---------------------------------------------------------------------- *
-     * The notification is AFTER the commit, and best-effort.
+     * The responder alert is AFTER the commit, and best-effort. FR-107.
      * ---------------------------------------------------------------------- *
-     * FR-107: a notification failure must never fail the request that caused it. A
-     * dispatch that succeeded but whose notification failed is still a dispatch,
-     * and a responder is still on their way — answering 500 would tell a
-     * dispatcher the assignment failed and invite a second one.
+     * brief §3: the alert carries the emergency category, the priority, the
+     * location, the distance, the required resources and the time reported — the
+     * six facts a responder needs in order to decide, in the notification itself
+     * rather than behind a tap. A notification failure never fails the request
+     * that caused it: a dispatch whose notification failed is still a dispatch,
+     * and answering 500 would tell a dispatcher the assignment failed and invite
+     * a second one.
      *
-     * `notifyInApp` never throws, so this is fire-and-forget by construction rather
-     * than by a `.catch()` that could be forgotten.
+     * `deliverToRecipients` never throws, so this is fire-and-forget by
+     * construction rather than by a `.catch()` that could be forgotten.
      */
     if (!result.noop) {
-      const recipients = recipientsForEvent('assigned', {
+      const incident = await readIncidentForAlert(result.incidentId);
+      const recipients = recipientsForEvent('dispatched', {
         responderUid: result.responderUid,
         responderName: null,
         dispatcherUid: user.uid,
@@ -97,13 +168,26 @@ export const POST = withRequest(
         reporterUid: null,
       });
       if (recipients.uids.length > 0) {
-        await notifyInApp(
-          {
-            // `docs/07 §10.2`: `incident_assigned` -> the assigned responder,
-            // severity `critical`.
-            type: 'incident_assigned',
+        await deliverToRecipients({
+          spec: {
+            // `docs/07 §10.2`: `dispatch_received` -> the assigned responder,
+            // severity `critical`. The type is the same on both copy paths so the
+            // client's filter for "assignment" rows stays one value.
+            type: 'dispatch_received',
             severity: 'critical',
-            ...NOTIFICATION_COPY.assignmentReceived(result.incidentReference),
+            ...(incident === null
+              ? NOTIFICATION_COPY.assignmentReceived(result.incidentReference)
+              : NOTIFICATION_COPY.dispatchReceived(
+                  result.incidentReference,
+                  categoryLabel(incident.category),
+                  URGENCY_META[incident.urgency].label,
+                  // The place name a human can act on — never raw coordinates in a
+                  // push-style alert someone might read on a locked phone in public.
+                  incident.placeName ?? 'Location not recorded',
+                  formatDistance(result.distanceM),
+                  resourcesSummary(incident.resources),
+                  formatClock(incident.createdAt),
+                )),
             incidentId: result.incidentId,
             // The human reference, not the Firestore id: a responder reading this
             // on a phone quotes the code back to a dispatcher.
@@ -111,13 +195,10 @@ export const POST = withRequest(
             link: null,
             actor: { uid: user.uid, displayName: user.displayName },
           },
-          recipients.uids.map((uid) => ({
-            uid,
-            role: 'responder',
-            inAppEnabled: true,
-          })),
-          ctx.requestId,
-        );
+          recipients: recipients.uids.map((uid) => ({ uid, role: 'responder' as const })),
+          channels: ['in_app'],
+          requestId: ctx.requestId,
+        });
       }
     }
 

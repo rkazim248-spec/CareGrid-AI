@@ -275,6 +275,27 @@ service firebase.firestore {
         // signed URL from the API after a resource-level check (docs/10 §10.2).
         allow read, write: if false;
       }
+
+      /**
+       * Phase 14. AI reviews. Server-written and server-read only.
+       *
+       * Denying client WRITE is the load-bearing half, and it is stricter than it
+       * looks: a review is a privileged human judgement about AI output, so a
+       * browser that could write one could forge "a reviewer agreed with the
+       * model" for an incident no human ever looked at, and the low-confidence
+       * queue would drain itself into false closure.
+       *
+       * Denying client READ as well is deliberate rather than conservative. A
+       * dispatcher has no capability to review AI triage, and Firestore rules
+       * cannot express "the incident's own reader, except on this one
+       * subcollection" without duplicating the whole incident gate — so the
+       * honest thing is to serve reviews through the admin route, which checks
+       * `r13_readAiTriagePanel` server-side, rather than through a rule that
+       * approximates it.
+       */
+      match /aiReviews/{reviewId} {
+        allow read, write: if false;
+      }
     }
 
     /* ===================================================================== */

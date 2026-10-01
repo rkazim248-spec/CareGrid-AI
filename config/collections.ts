@@ -101,6 +101,26 @@ export const SUB_COLLECTIONS = {
   incidentReports: 'reports',
   /** docs/07 §6. Append-only lifecycle timeline. Never updated. */
   statusHistory: 'statusHistory',
+  /**
+   * Phase 14. One AI review of one incident.
+   *
+   * A SUBCOLLECTION, not a top-level collection, and the choice is load-bearing.
+   *
+   * The alternative was a top-level `aiReviews` collection, which would have been
+   * a poor fit for three reasons: a review has no meaning without its incident, so
+   * it could never be listed on its own; a top-level collection would need a row in
+   * `COLLECTIONS` AND a matching rule in `firestore.rules`, which is the four-step
+   * obligation this file's header describes; and the review queue is driven by
+   * `incidents.aiNeedsReview` anyway, so the queue query would start from
+   * incidents regardless and then have to join back.
+   *
+   * Hanging it off the incident makes all three problems disappear. It is
+   * server-only — `firestore.rules` denies every client read and write, exactly as
+   * it does for `evidence` — because a review records a privileged judgement
+   * about AI output and no browser has any business writing or reading one
+   * directly.
+   */
+  aiReviews: 'aiReviews',
   /** docs/07 §6.2. What an incident needs, and how much is on the way. */
   resources: 'resources',
 } as const;

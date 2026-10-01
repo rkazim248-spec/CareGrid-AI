@@ -13,6 +13,7 @@ import type {
   AccountStatus,
   AccuracyGrade,
   ActorRole,
+  AiRunOutcome,
   AuditAction,
   DispatchMode,
   DispatchStatus,
@@ -107,7 +108,8 @@ export type AiAnalysis = {
   model: string;
   promptVersion: string;
   confidence: number;
-  outcome: 'success' | 'validation_failed' | 'timeout' | 'error' | 'blocked';
+  /** Phase 14: was `AiRunOutcome`, promoted so the admin queue can filter on it. */
+  outcome: AiRunOutcome;
   /** FR-029 — when true the incident still exists and a person must review it. */
   fallbackUsed: boolean;
   latencyMs: number;

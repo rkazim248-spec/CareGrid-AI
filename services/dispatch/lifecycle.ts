@@ -67,7 +67,8 @@ import {
 import type { ResolutionRecord } from '@/config/dispatch';
 import { auditLogInTransaction, buildAuditDiff } from '@/services/dispatch/audit';
 import { appendStatusHistoryInTransaction, buildStatusHistoryEvent } from '@/services/dispatch/status-history';
-import { NOTIFICATION_COPY, notifyInApp, recipientsForEvent, type InAppRecipient } from '@/services/dispatch/notify';
+import { NOTIFICATION_COPY, recipientsForEvent } from '@/services/dispatch/notify';
+import { deliverToRecipients } from '@/services/notifications';
 import type { AuditAction, HistoryEventType, IncidentStatus, UserRole } from '@/types';
 
 /* ========================================================================== */
@@ -623,7 +624,7 @@ export async function transitionIncident(
 /* ========================================================================== */
 
 /**
- * Tell the relevant people that an assignment was answered. **Never throws.**
+ * Tell the assigning dispatcher that a dispatch was answered. **Never throws.**
  *
  * Called by the ROUTE, after `respondToDispatch` has committed, which is the only
  * ordering that satisfies both halves of FR-107: the notification cannot roll back
@@ -635,6 +636,10 @@ export async function transitionIncident(
  * security boundary: if this list were wrong the consequence is a missed or extra
  * in-app row, not an unauthorised action, and every action it describes was
  * already authorised and written by the transaction.
+ *
+ * `reason` is the responder's own decline wording — the same text
+ * `respondToDispatch` already recorded on the dispatch document, carried into the
+ * dispatcher's copy rather than re-derived, so there is one version of why.
  */
 export async function notifyDispatchAnswered(
   params: {
@@ -644,53 +649,60 @@ export async function notifyDispatchAnswered(
     readonly responderName: string;
     readonly dispatcherUid: string | null;
     readonly reporterUid: string | null;
+    readonly reason: string | null;
     readonly requestId: string;
   },
 ): Promise<void> {
-  const { uids, roles } = recipientsForEvent(params.event, {
-    responderUid: null,
-    responderName: null,
-    dispatcherUid: params.dispatcherUid,
-    dispatcherName: null,
-    reporterUid: params.reporterUid,
-  });
+  const { uids, roles } = recipientsForEvent(
+    params.event === 'accepted' ? 'dispatch_accepted' : 'dispatch_declined',
+    {
+      responderUid: null,
+      responderName: null,
+      dispatcherUid: params.dispatcherUid,
+      dispatcherName: null,
+      reporterUid: params.reporterUid,
+    },
+  );
 
   if (uids.length === 0) return;
 
   const spec =
     params.event === 'accepted'
       ? {
-          type: 'status_changed' as const,
+          // `docs/07 §10.2`: `dispatch_accepted` -> the assigning dispatcher, `info`.
+          type: 'dispatch_accepted' as const,
           severity: 'info' as const,
-          ...NOTIFICATION_COPY.assignmentAccepted(params.incidentRef, params.responderName),
+          ...NOTIFICATION_COPY.dispatchAccepted(params.incidentRef, params.responderName),
         }
       : {
-          // `docs/07 §10.2`: `responder_unavailable` -> the dispatchers who had
-          // that responder, severity `warning`.
-          type: 'responder_unavailable' as const,
+          // `docs/07 §10.2`: `dispatch_declined` -> the assigning dispatcher,
+          // `warning`. The dispatcher's next action is to choose someone else, so
+          // the copy ends with that instruction, not a reassurance.
+          type: 'dispatch_declined' as const,
           severity: 'warning' as const,
-          ...NOTIFICATION_COPY.assignmentDeclined(params.incidentRef, params.responderName),
+          ...NOTIFICATION_COPY.dispatchDeclined(params.incidentRef, params.responderName, params.reason),
         };
 
-  const recipients: InAppRecipient[] = uids.map((uid) => ({
-    uid,
-    // `recipientsForEvent` deduplicates by uid and keeps the FIRST role it saw,
-    // so this cannot disagree with the matrix that built the list.
-    role: roles.get(uid) ?? 'dispatcher',
-    inAppEnabled: true,
-  }));
-
-  await notifyInApp(
-    {
+  await deliverToRecipients({
+    spec: {
       ...spec,
       incidentId: params.incidentId,
       incidentRef: params.incidentRef,
       link: null,
       actor: null,
     },
-    recipients,
-    params.requestId,
-  );
+    recipients: uids.map((uid) => ({
+      uid,
+      // `recipientsForEvent` deduplicates by uid and keeps the FIRST role it saw,
+      // so this cannot disagree with the matrix that built the list.
+      role: roles.get(uid) ?? 'dispatcher',
+    })),
+    // In-app only. No external provider is configured in this build, and requesting
+    // SMS here would only mint `unavailable` outcomes — rows describing a channel
+    // this deployment cannot use.
+    channels: ['in_app'],
+    requestId: params.requestId,
+  });
 }
 
 /* ========================================================================== */

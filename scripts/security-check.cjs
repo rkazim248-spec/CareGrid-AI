@@ -1883,6 +1883,7 @@ const dispatchRoute = read('app/api/incidents/[id]/dispatch/route.ts');
 const candidatesRoute = read('app/api/incidents/[id]/candidates/route.ts');
 const statusRoute = read('app/api/incidents/[id]/status/route.ts');
 const dispatchIdRoute = read('app/api/dispatches/[dispatchId]/route.ts');
+const unifiedNotifySource = read('services/notifications/dispatch.ts');
 const enumsSource = read('types/enums.ts');
 
 /**
@@ -2284,20 +2285,24 @@ check(
 /**
  * 38. Notification failure cannot fail the request.
  *
- * FR-107. Asserted on the STRUCTURE — that `notifyInApp` catches per recipient, and
- * that the routes notify AFTER the service call — rather than on a comment.
+ * FR-107. Asserted on the STRUCTURE — that the unified service's per-delivery
+ * `deliverNotification` catches and returns a failed outcome rather than
+ * propagating, and that the routes notify AFTER the service call — rather than
+ * on a comment.
  */
-const notifyInAppCatches = /catch\s*\(error\)\s*\{[\s\S]{0,900}?failed \+= 1/.test(notifyCode);
+const deliveryCatches = /catch\s*\(error\)\s*\{[\s\S]{0,900}?status: 'failed'/.test(
+  codeOnly(unifiedNotifySource),
+);
 const notificationAfterTransaction =
-  /const result = await assignResponder\([\s\S]{0,3000}?await notifyInApp\(/.test(dispatchRoute) &&
+  /const result = await assignResponder\([\s\S]{0,6000}?await deliverToRecipients\(/.test(dispatchRoute) &&
   /const result = await respondToDispatch\([\s\S]{0,3000}?await notifyDispatchAnswered\(/.test(
     dispatchIdRoute,
   );
 check(
   'A notification failure cannot fail the request that caused it (FR-107)',
-  notifyInAppCatches && notificationAfterTransaction,
-  !notifyInAppCatches
-    ? 'notifyInApp has no per-recipient catch, so one bad write would propagate to the caller'
+  deliveryCatches && notificationAfterTransaction,
+  !deliveryCatches
+    ? 'the unified delivery has no per-delivery catch, so one bad write would propagate to the caller'
     : 'a route notifies before the service call, or not at all',
 );
 
@@ -3077,10 +3082,16 @@ check(
 );
 
 /**
- * 68. Notification types are the declared 12, not free strings.
+ * 68. Notification types are the declared 17, not free strings.
  *
  * brief §4: "Do not allow arbitrary client-provided notification types. Validate
  * notification type server-side."
+ *
+ * The count is 17: docs/07 §10.2's original twelve plus Phase 13's five
+ * (`dispatch_received`, `dispatch_accepted`, `dispatch_declined`,
+ * `incident_update`, `system`). The number is asserted so a type cannot silently
+ * disappear — and when this list legitimately grows again, this line grows with
+ * it, as a visible diff rather than a drifting regex.
  *
  * The check is that the client reads the SAME declared set rather than
  * restating it — a restated list is how the three-vocabulary bug in the incident
@@ -3106,9 +3117,9 @@ const declaredTypes = (enumsSource9.match(/export const NOTIFICATION_TYPES = \[(
 const derivesFromEnum = /new Set<string>\(NOTIFICATION_TYPES\)/.test(l5Hook);
 check(
   'The notification row mapper derives its type set from NOTIFICATION_TYPES, not a restated list (brief §4)',
-  declaredTypes.length === 12 && derivesFromEnum,
-  declaredTypes.length !== 12
-    ? `docs/07 §10.2 should declare 12 notification types; found ${declaredTypes.length}`
+  declaredTypes.length === 17 && derivesFromEnum,
+  declaredTypes.length !== 17
+    ? `docs/07 §10.2 plus Phase 13 should declare 17 notification types; found ${declaredTypes.length}`
     : 'the mapper restates the type list instead of deriving it from the enum',
 );
 

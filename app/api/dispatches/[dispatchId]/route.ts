@@ -171,6 +171,7 @@ export const POST = withRequest(
           responderName: notification.responderName,
           dispatcherUid: notification.dispatcherUid,
           reporterUid: notification.reporterUid,
+          reason: null,
           requestId: ctx.requestId,
         });
       }
@@ -223,6 +224,9 @@ export const PUT = withRequest(
           responderName: notification.responderName,
           dispatcherUid: notification.dispatcherUid,
           reporterUid: notification.reporterUid,
+          // The responder's own words, already recorded on the dispatch document —
+          // carried into the copy rather than re-derived.
+          reason: body.reason ?? null,
           requestId: ctx.requestId,
         });
       }
@@ -291,6 +295,7 @@ export const DELETE = withRequest(
           responderName: notification.responderName,
           dispatcherUid: notification.dispatcherUid,
           reporterUid: notification.reporterUid,
+          reason: body.reason,
           requestId: ctx.requestId,
         });
       }

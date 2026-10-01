@@ -103,11 +103,44 @@ const where = 'See docs/21_ENVIRONMENT_VARIABLES.md and .env.example.';
  * that into one clear sentence.
  */
 export function isAdminConfigured(): boolean {
-  return ['FIREBASE_PROJECT_ID', 'FIREBASE_CLIENT_EMAIL', 'FIREBASE_PRIVATE_KEY'].every(
+  return FIREBASE_ADMIN_VARS.every(
     (name) => {
       const value = process.env[name];
       return typeof value === 'string' && value.trim() !== '';
     },
+  );
+}
+
+/**
+ * The Admin SDK variables, as a list. Phase 14.
+ *
+ * Existed as an inline array literal inside `isAdminConfigured()` until the admin
+ * provider panel needed the same three names for its own status line. A second
+ * hand-written copy is how a fourth credential gets added to the check but not to
+ * the panel, and the panel then reports a healthy Firebase with a variable nobody
+ * ever sets.
+ */
+export const FIREBASE_ADMIN_VARS = [
+  'FIREBASE_PROJECT_ID',
+  'FIREBASE_CLIENT_EMAIL',
+  'FIREBASE_PRIVATE_KEY',
+] as const;
+
+/**
+ * The Admin SDK as an `IntegrationStatus`, for the provider panel.
+ *
+ * Built on `statusFor` so the shape matches every other provider, and so the
+ * reported `required` field is the SAME array `isAdminConfigured()` checks rather
+ * than a parallel list that could disagree with it.
+ *
+ * Its `problem` names variables and their absence. It never names a value —
+ * `FIREBASE_PRIVATE_KEY` is the one field where that distinction matters most.
+ */
+export function firebaseAdminStatus(): IntegrationStatus {
+  return statusFor(
+    FIREBASE_ADMIN_VARS,
+    'Every API request is refused with 503 until this is set — nothing else can work first.',
+    'This is the first thing to fix when the whole API is returning 503.',
   );
 }
 
@@ -422,6 +455,133 @@ export function twilioConfig() {
   } as const;
 }
 
+/* --- Mapbox — docs/21 §2, docs/12 ------------------------------------------ */
+
+/**
+ * Mapbox is the CLIENT-side map, so the token the browser needs is a public one.
+ *
+ * It is declared here rather than only in `lib/env.client.ts` because the admin
+ * provider panel has to be able to answer "is Mapbox configured?" from the SERVER,
+ * and `NEXT_PUBLIC_*` variables are readable in both places — Next inlines them at
+ * build time, so the server bundle sees the same string the browser does. Reading
+ * it here is therefore the same read the browser makes, not a second source.
+ *
+ * The SERVER token is deliberately absent from this list. `.env.example` is
+ * explicit that a Mapbox secret must never be exposed, and a list that included
+ * it would invite someone to add it "so the panel can see it".
+ */
+export const MAPBOX_REQUIRED_VARS = ['NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN'] as const;
+
+export function mapboxStatus(): IntegrationStatus {
+  return statusFor(
+    MAPBOX_REQUIRED_VARS,
+    'The map, and therefore location display on every incident, is unavailable.',
+    'Incident lists and all non-map features are unaffected.',
+  );
+}
+
+export function isMapboxConfigured(): boolean {
+  return mapboxStatus().configured;
+}
+
+/**
+ * Whether this deployment INTENDS to use Mapbox.
+ *
+ * `MAPBOX_ENABLED` is an explicit opt-in signal, and it exists because "token
+ * absent" and "Mapbox deliberately not wanted" are indistinguishable from
+ * configuration alone. Without it the provider panel cannot render the difference,
+ * and every deployment that will never use Mapbox shows a permanent red gap that
+ * an operator has to chase at 3am.
+ *
+ * It does NOT default to "inferred from the token": that would make this function
+ * a restatement of `mapboxStatus()` and therefore useless as an intent signal.
+ * Absent or unparseable means TRUE — a provider is expected unless someone says
+ * otherwise — which fails toward "please look at this", never toward "hide it".
+ */
+export function isMapboxEnabled(): boolean {
+  const raw = process.env.MAPBOX_ENABLED?.trim().toLowerCase();
+  if (raw === undefined || raw === '') return true;
+  return raw !== 'false' && raw !== '0' && raw !== 'no';
+}
+
+export function mapboxConfig() {
+  return {
+    accessToken: optionalString('NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN'),
+    defaultZoom: tunableNumber('MAPBOX_DEFAULT_ZOOM', 13, 1, 22),
+    maxZoom: tunableNumber('MAPBOX_MAX_ZOOM', 18, 1, 24),
+  } as const;
+}
+
+/* --- ImageKit — docs/15, docs/21 §2 ----------------------------------------- */
+
+/**
+ * Evidence storage.
+ *
+ * TWO variables matter and they are not interchangeable: the public key identifies
+ * the account to the browser, and the private key signs the uploads. A
+ * configuration with the public key but no private key can upload nothing, which
+ * is the case `state: 'degraded'` exists to describe — it is not the same
+ * situation as being entirely unconfigured, and an operator who cannot tell those
+ * apart will try the wrong fix.
+ */
+export const IMAGEKIT_REQUIRED_VARS = [
+  'NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY',
+  'IMAGEKIT_PRIVATE_KEY',
+  'IMAGEKIT_URL_ENDPOINT',
+] as const;
+
+/** Only the pair that actually gates an upload. Used for the degraded check. */
+export const IMAGEKIT_UPLOAD_VARS = ['IMAGEKIT_PRIVATE_KEY', 'IMAGEKIT_URL_ENDPOINT'] as const;
+
+export function imagekitStatus(): IntegrationStatus {
+  return statusFor(
+    IMAGEKIT_REQUIRED_VARS,
+    'Photo and audio evidence cannot be uploaded, though every report is still accepted without it.',
+    'Incidents, triage, and dispatch are unaffected.',
+  );
+}
+
+export function isImagekitConfigured(): boolean {
+  return imagekitStatus().configured;
+}
+
+/** True when the browser can be given a public key, even if uploads cannot work. */
+export function isImagekitPublicConfigured(): boolean {
+  return statusFor(['NEXT_PUBLIC_IMAGEKIT_PUBLIC_KEY'], '', '').configured;
+}
+
+/** True when a signed upload can actually be issued. */
+export function isImagekitUploadConfigured(): boolean {
+  return IMAGEKIT_UPLOAD_VARS.every((name) => {
+    const value = process.env[name];
+    return typeof value === 'string' && value.trim() !== '';
+  });
+}
+
+/* --- AssemblyAI — docs/15 §9, docs/21 §2 ------------------------------------ */
+
+export const ASSEMBLYAI_REQUIRED_VARS = ['ASSEMBLYAI_API_KEY'] as const;
+
+export function assemblyaiStatus(): IntegrationStatus {
+  return statusFor(
+    ASSEMBLYAI_REQUIRED_VARS,
+    'Voice notes are stored but not transcribed, so triage falls back to their absence.',
+    'A caller who reports by text is completely unaffected.',
+  );
+}
+
+export function isAssemblyaiConfigured(): boolean {
+  return assemblyaiStatus().configured;
+}
+
+export function assemblyaiConfig() {
+  return {
+    apiKey: optionalString('ASSEMBLYAI_API_KEY'),
+    timeoutMs: tunableNumber('ASSEMBLYAI_TIMEOUT_MS', 60_000, 1_000, 300_000),
+    pollIntervalMs: tunableNumber('ASSEMBLYAI_POLL_INTERVAL_MS', 3_000, 500, 30_000),
+  } as const;
+}
+
 /* --- Operations ---------------------------------------------------------- */
 
 export function cronSecret(): string | null {
@@ -630,3 +790,21 @@ function tunableNumber(name: string, fallback: number, min: number, max: number)
   return Math.min(max, Math.max(min, parsed));
 }
 
+/**
+ * `NOTIFICATION_RETRY_LIMIT` — the ceiling on delivery attempts per notification.
+ *
+ * `docs/21` records it; `brief §5` requires controlled retries with no infinite
+ * loop. The value is a RETRY count, so total attempts are `limit + 1` — one initial
+ * try plus the retries.
+ *
+ * Read through an accessor rather than inline so the bound is one number in one place.
+ * `services/notifications/dispatch.ts` compares against it before every provider call,
+ * which is what makes the ceiling structural: there is no scheduler in that module to
+ * run away, only a comparison.
+ *
+ * Bounded to 0..5: a value above 5 is a configuration mistake, and honouring it would
+ * mean a failed SMS provider is retried six times per notification per recipient.
+ */
+export function notificationRetryLimit(): number {
+  return boundedNumber('NOTIFICATION_RETRY_LIMIT', 2, 0, 5);
+}

@@ -3,30 +3,43 @@
 import * as React from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { BellOff, CheckCheck } from 'lucide-react';
+import { toast } from 'sonner';
 
 import {
+  Alert,
+  AlertDescription,
+  AlertIcon,
+  AlertTitle,
   Button,
   Pagination,
+  Skeleton,
   Tabs,
   TabsList,
   TabsTrigger,
 } from '@/components/ui';
-import { DemoDataBadge, EMPTY_COPY, EmptyState } from '@/components/feedback';
-import { MOCK_NOTIFICATIONS } from '@/lib/mock-data';
+import { EMPTY_COPY, EmptyState } from '@/components/feedback';
+import { notificationMarkAllRead, notificationMarkRead } from '@/lib/api/client';
+import { messageFor } from '@/lib/api/errors';
 import { formatDayHeading } from '@/lib/format';
+import {
+  useRealtimeNotifications,
+  type LiveNotification,
+} from '@/features/notifications/use-realtime-notifications';
 import { NotificationRow } from '@/features/notifications/notification-row';
 import type { AppNotification, NotificationType } from '@/types';
 
 /**
  * /notifications — docs/04 §13.14.
  *
+ * The list is LIVE (L5): a `onSnapshot` listener scoped to the signed-in
+ * recipient, so a new dispatch notification or an incident update lands here
+ * without a refresh. Read state is not local — marking read PATCHes
+ * `/api/notifications`, the server scopes the write to the verified token, and
+ * the snapshot flips the row.
+ *
  * URL-backed filter tabs (`?filter=all|unread|assigned`) for the same reason
  * the settings tabs are: a filter that changes what you are looking at is a
  * navigation (docs/04 §5.15, §5.32).
- *
- * Read state is local. `PATCH /api/notifications/read-all` is the Phase 3 call;
- * the shape of the interaction, the button, and the row treatment are the parts
- * worth reviewing now.
  *
  * PAGE SIZE 10, not the 25 the API envelope defaults to: this is a phone list
  * and a person checking alerts wants them without scrolling past a screen of
@@ -46,7 +59,37 @@ function isFilterValue(value: string | null): value is FilterValue {
   return value === 'all' || value === 'unread' || value === 'assigned';
 }
 
-const ASSIGNED_TYPES: readonly NotificationType[] = ['incident_assigned'];
+/** Notifications that mean "this is yours to answer", not just "something moved". */
+const ASSIGNED_TYPES: readonly NotificationType[] = [
+  'incident_assigned',
+  'dispatch_received',
+];
+
+/** A row whose timestamp could not be read still renders — under the epoch heading rather than being dropped. */
+const EPOCH_ISO = new Date(0).toISOString();
+
+/**
+ * `LiveNotification` → `AppNotification`.
+ *
+ * The listener row is a subset of the stored document; the row component's
+ * contract is the domain type. `actor` is `null` because nothing the row
+ * renders reads it, and echoing a server actor identity into the payload adds
+ * nothing for this screen.
+ */
+function toAppNotification(live: LiveNotification): AppNotification {
+  return {
+    notificationId: live.id,
+    type: live.type,
+    severity: live.severity,
+    title: live.title,
+    body: live.body,
+    incidentId: live.incidentId,
+    link: live.link,
+    read: live.read,
+    createdAt: live.createdAtIso ?? EPOCH_ISO,
+    actor: null,
+  };
+}
 
 export function NotificationList() {
   const router = useRouter();
@@ -55,9 +98,11 @@ export function NotificationList() {
   const requested = searchParams.get('filter');
   const filter: FilterValue = isFilterValue(requested) ? requested : 'all';
 
-  // `null` means "read, as delivered". Phase 3 replaces this with the payload.
-  const [readOverrides, setReadOverrides] = React.useState<Record<string, boolean>>({});
   const [page, setPage] = React.useState(0);
+  const [markingAll, setMarkingAll] = React.useState(false);
+
+  const notifications = useRealtimeNotifications();
+  const { items: liveItems, unreadCount, hasReceivedSnapshot, error } = notifications;
 
   const setFilter = React.useCallback(
     (value: string) => {
@@ -69,12 +114,8 @@ export function NotificationList() {
   );
 
   const items = React.useMemo<readonly AppNotification[]>(
-    () =>
-      MOCK_NOTIFICATIONS.map((entry) => {
-        const override = readOverrides[entry.notificationId];
-        return override === undefined ? entry : { ...entry, read: override };
-      }),
-    [readOverrides],
+    () => liveItems.map(toAppNotification),
+    [liveItems],
   );
 
   const visible = React.useMemo(() => {
@@ -87,27 +128,33 @@ export function NotificationList() {
   const safePage = Math.min(page, pageCount - 1);
   const window = visible.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
 
-  const unreadCount = items.filter((entry) => !entry.read).length;
   const from = visible.length === 0 ? 0 : safePage * PAGE_SIZE + 1;
   const to = Math.min(safePage * PAGE_SIZE + PAGE_SIZE, visible.length);
 
-  const markAllRead = () => {
-    setReadOverrides(
-      Object.fromEntries(MOCK_NOTIFICATIONS.map((entry) => [entry.notificationId, true])),
-    );
-  };
+  const markAllRead = React.useCallback(() => {
+    if (markingAll) return;
+    setMarkingAll(true);
+    notificationMarkAllRead()
+      .catch((cause: unknown) => {
+        toast.error('Could not mark everything as read.', { description: messageFor(cause) });
+      })
+      .finally(() => setMarkingAll(false));
+  }, [markingAll]);
 
-  const markOneRead = (id: string) => {
-    setReadOverrides((current) => ({ ...current, [id]: true }));
-  };
+  // Fire-and-forget: the row flips when the server commit reaches the snapshot,
+  // which is the same moment the unread count drops. A failure is loud.
+  const markOneRead = React.useCallback((id: string) => {
+    notificationMarkRead(id).catch((cause: unknown) => {
+      toast.error('Could not mark as read.', { description: messageFor(cause) });
+    });
+  }, []);
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
-        <DemoDataBadge />
         {unreadCount > 0 ? (
           <span className="text-xs text-secondary tabular">
-            {unreadCount} unread of {items.length}
+            {unreadCount} unread of the {items.length} most recent
           </span>
         ) : null}
       </div>
@@ -129,6 +176,7 @@ export function NotificationList() {
           variant="secondary"
           size="lg"
           onClick={markAllRead}
+          loading={markingAll}
           disabled={unreadCount === 0}
         >
           <CheckCheck aria-hidden="true" />
@@ -136,12 +184,37 @@ export function NotificationList() {
         </Button>
       </div>
 
-      {window.length === 0 ? (
-        <EmptyState
-          icon={BellOff}
-          title={EMPTY_COPY.notifications.title}
-          description={EMPTY_COPY.notifications.description}
-        />
+      {error !== null ? (
+        <Alert tone="danger" role="alert">
+          <AlertIcon tone="danger" />
+          <div className="flex min-w-0 flex-col gap-1">
+            <AlertTitle>Live updates are unavailable</AlertTitle>
+            <AlertDescription>
+              {error.retryable
+                ? 'The connection dropped. The list will retry on its own.'
+                : 'This list could not be loaded. Try reloading the page.'}
+            </AlertDescription>
+          </div>
+        </Alert>
+      ) : !hasReceivedSnapshot ? (
+        <div className="flex flex-col gap-2" aria-busy="true">
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-32 w-full" />
+        </div>
+      ) : window.length === 0 ? (
+        filter === 'unread' && items.length > 0 ? (
+          <EmptyState
+            icon={CheckCheck}
+            title="You're all caught up"
+            description="No unread notifications in your recent history."
+          />
+        ) : (
+          <EmptyState
+            icon={BellOff}
+            title={EMPTY_COPY.notifications.title}
+            description={EMPTY_COPY.notifications.description}
+          />
+        )
       ) : (
         <div className="flex flex-col gap-4">
           {groupByDay(window).map((group) => (

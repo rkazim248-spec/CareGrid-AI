@@ -163,6 +163,15 @@ export type RouteOptions<TBody, TQuery, TParams> = {
   /** Exempt from the `status !== 'active'` gate. See `requireUser`. */
   allowInactiveAccount?: boolean;
   /**
+   * Exempt from the `users/{uid}` EXISTENCE gate too. See `requireUser`.
+   *
+   * ONLY `POST /api/me/bootstrap`. Distinct from `allowInactiveAccount` on
+   * purpose: waiving the status gate does not waive the existence gate, and a
+   * route whose whole job is to create the missing document cannot be gated on
+   * the document existing.
+   */
+  allowMissingUserDoc?: boolean;
+  /**
    * Answer even when the Admin SDK is unconfigured.
    *
    * ONLY `GET /api/health`. A liveness endpoint that returns 503 because a
@@ -259,6 +268,7 @@ export function withRequest<TBody, TQuery, TParams, TData>(
           requestId,
           ...(options.action ? { action: options.action } : {}),
           ...(options.allowInactiveAccount ? { allowInactiveAccount: true } : {}),
+        ...(options.allowMissingUserDoc ? { allowMissingUserDoc: true } : {}),
         });
       }
 

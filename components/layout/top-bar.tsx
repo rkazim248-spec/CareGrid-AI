@@ -11,8 +11,8 @@ import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle, SheetTrigger }
 import { SidebarNav } from '@/components/layout/sidebar-nav';
 import { LiveIndicator } from '@/components/layout/live-indicator';
 import { useResolvedSession } from '@/components/providers/session-provider';
+import { useRealtimeNotifications } from '@/features/notifications/use-realtime-notifications';
 import { NAV_BY_ROLE } from '@/config/nav';
-import { MOCK_NOTIFICATIONS } from '@/lib/mock-data';
 import { DEMO_DISCLAIMER } from '@/lib/constants';
 import { DemoDataBadge } from '@/components/feedback/live-region';
 
@@ -26,15 +26,16 @@ import { DemoDataBadge } from '@/components/feedback/live-region';
  * notifications · avatar. The hamburger opens a real Sheet — a decorative
  * hamburger that does nothing is the single most common fake control in a
  * scaffolded app, and it is explicitly forbidden here.
+ *
+ * The bell's unread badge is the LIVE L5 count, not a mock: TopBar subscribes to
+ * the same (`id`, `queryKey`) pair as /notifications, and the listener registry
+ * refcounts them onto one Firestore channel — two components, one stream.
  */
-export function TopBar({
-  unreadCount = MOCK_NOTIFICATIONS.filter((n) => !n.read).length,
-}: {
-  unreadCount?: number;
-}) {
+export function TopBar() {
   const [navOpen, setNavOpen] = React.useState(false);
   const { role, user, signOut } = useResolvedSession();
   const pathname = usePathname();
+  const notifications = useRealtimeNotifications();
 
   // Only reachable when this is mounted outside `<RequireSession>`, which the
   // provider warns about in development. `titleForPath` and the nav table both
@@ -111,7 +112,7 @@ export function TopBar({
           icon={Bell}
           href="/notifications"
           asChild
-          badge={unreadCount}
+          badge={notifications.unreadCount}
         />
 
         <Link

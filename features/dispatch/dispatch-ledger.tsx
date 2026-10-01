@@ -1,6 +1,5 @@
 'use client';
 
-
 import * as React from 'react';
 import Link from 'next/link';
 import { Route, TriangleAlert } from 'lucide-react';
@@ -28,17 +27,21 @@ import { formatDistance, formatDuration, formatRelative } from '@/lib/format';
 import { MOCK_DISPATCHES, MOCK_RESPONDERS } from '@/lib/mock-data';
 import type { Dispatch, DispatchStatus } from '@/types';
 import { ResponderStatusBadge } from '@/features/responders/responder-status-badge';
-import { DispatchRowActions, WithdrawDialog } from '@/features/dispatch/dispatch-row-actions';
 import { useResolvedSession } from '@/components/providers/session-provider';
+import { ResponderAssignmentList } from '@/features/dispatch/responder-assignment-list';
 
 /**
  * DispatchLedger — `/dispatches` (docs/04 §13.12).
  *
- * The dispatcher's ledger and the responder's assignment list are the same table
- * with the same columns, scoped differently: a responder sees only their own
- * row, and that scoping is applied BEFORE the table renders rather than hidden
- * behind a tab, so a responder is never shown a count of other people's
- * assignments. From Phase 2 the server enforces it (docs/22 §4).
+ * Two different surfaces share this route, decided by ROLE and not viewport:
+ *
+ *   - a responder gets the LIVE assignment list (`ResponderAssignmentList`):
+ *     real dispatch rows over L6 with real Accept/Decline actions (Phase 13
+ *     brief §3). The scoping happens server-side — the query is keyed to the
+ *     session uid — so a responder is never sent anyone else's rows at all;
+ *   - a dispatcher (or admin) keeps the demo ledger below. It is MOCK data
+ *     until Phase 2 wires the dispatcher queue; its rows, filters and columns
+ *     exist to design the table, not to claim live state.
  *
  * The word "dispatch" here means only "assigning a community responder"
  * (docs/04 §15.4). Nothing on this screen implies an ambulance, a police unit, or
@@ -66,71 +69,61 @@ const ASSIGNMENTS_LIST = 'Community responder assignments';
 const CAPABILITY_MATCH_YES = 'Matches what the incident needs';
 const CAPABILITY_MATCH_NO = 'Does not match';
 
-type LedgerProps = {
-  rows: readonly Dispatch[];
-  isResponder: boolean;
-  onWithdraw: (dispatch: Dispatch) => void;
-};
-
 export function DispatchLedger() {
-
-  const { role, user } = useResolvedSession();
+  const { role } = useResolvedSession();
   const isResponder = role === 'responder';
 
+  // Dispatcher-side state, declared above the branch so flipping the preview
+  // role never changes this component's hook count between renders.
   const [responderFilter, setResponderFilter] = React.useState('all');
   const [statusFilter, setStatusFilter] = React.useState('all');
-  const [withdrawing, setWithdrawing] = React.useState<Dispatch | null>(null);
-
   const id = React.useId();
 
-  const scoped = React.useMemo(() => {
-    if (!isResponder) return MOCK_DISPATCHES;
-    const self = MOCK_RESPONDERS.find((r) => r.uid === user?.uid);
-    return MOCK_DISPATCHES.filter((dispatch) => dispatch.responder.uid === self?.uid);
-  }, [isResponder, user?.uid]);
-
-  const rows = scoped.filter((dispatch) => {
+  const rows = MOCK_DISPATCHES.filter((dispatch) => {
     if (responderFilter !== 'all' && dispatch.responder.uid !== responderFilter) return false;
     if (statusFilter !== 'all' && dispatch.status !== statusFilter) return false;
     return true;
   });
 
-  const ledger: LedgerProps = { rows, isResponder, onWithdraw: setWithdrawing };
-
+  if (isResponder) {
+    return (
+      <div className="flex flex-col gap-6">
+        <PageHeader
+          title="My assignments"
+          description="Live dispatches addressed to you. Answer here, or from the alert when one arrives."
+        />
+        <ResponderAssignmentList />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title={isResponder ? 'My assignments' : 'Dispatches'}
-        description={
-          isResponder
-            ? 'The incidents assigned to you, and what each one needs from you.'
-            : 'Every community responder assignment: who was asked, whether they accepted, and how long they took to reply.'
-        }
+        title="Dispatches"
+        description="Demo data. Every community responder assignment: who was asked, whether they accepted, and how long they took to reply."
       />
 
       <Card className="p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          {isResponder ? null : (
-            <div className="flex flex-col gap-2">
-              <label htmlFor={`${id}-responder`} className="text-sm font-medium text-secondary">
-                Responder
-              </label>
-              <Select value={responderFilter} onValueChange={setResponderFilter}>
-                <SelectTrigger id={`${id}-responder`}>
-                  <SelectValue placeholder="Everyone" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">Everyone</SelectItem>
-                  {MOCK_RESPONDERS.map((responder) => (
-                    <SelectItem key={responder.uid} value={responder.uid}>
-                      {responder.displayName}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
+          <div className="flex flex-col gap-2">
+            <label htmlFor={`${id}-responder`} className="text-sm font-medium text-secondary">
+              Responder
+            </label>
+            <Select value={responderFilter} onValueChange={setResponderFilter}>
+              <SelectTrigger id={`${id}-responder`}>
+                <SelectValue placeholder="Everyone" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Everyone</SelectItem>
+                {MOCK_RESPONDERS.map((responder) => (
+                  <SelectItem key={responder.uid} value={responder.uid}>
+                    {responder.displayName}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
 
           <div className="flex flex-col gap-2">
             <label htmlFor={`${id}-status`} className="text-sm font-medium text-secondary">
@@ -162,25 +155,18 @@ export function DispatchLedger() {
       ) : (
         <>
           <div className="hidden md:block">
-            <DispatchTable {...ledger} />
+            <DispatchTable rows={rows} />
           </div>
           <div className="md:hidden">
-            <DispatchCards {...ledger} />
+            <DispatchCards rows={rows} />
           </div>
         </>
       )}
-
-      <WithdrawDialog
-        dispatch={withdrawing}
-        onOpenChange={(next) => {
-          if (!next) setWithdrawing(null);
-        }}
-      />
     </div>
   );
 }
 
-function DispatchTable({ rows, isResponder, onWithdraw }: LedgerProps) {
+function DispatchTable({ rows }: { rows: readonly Dispatch[] }) {
   return (
     <Card>
       <Table>
@@ -193,12 +179,10 @@ function DispatchTable({ rows, isResponder, onWithdraw }: LedgerProps) {
             <TableHead scope="col">Responder</TableHead>
             <TableHead scope="col">Assignment</TableHead>
             <TableHead scope="col">Distance</TableHead>
-            <TableHead scope="col">ETA</TableHead>
             <TableHead scope="col">Response time</TableHead>
             <TableHead scope="col">Capability match</TableHead>
             <TableHead scope="col">Sent</TableHead>
             <TableHead scope="col">Accepted</TableHead>
-            {isResponder ? <TableHead scope="col">Action</TableHead> : null}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -226,7 +210,6 @@ function DispatchTable({ rows, isResponder, onWithdraw }: LedgerProps) {
                 </Badge>
               </TableCell>
               <TableCell className="tabular">{formatDistance(dispatch.distanceM)}</TableCell>
-              <TableCell className="tabular">{formatDuration(dispatch.etaSec)}</TableCell>
               <TableCell className="tabular">{formatDuration(dispatch.responseSec)}</TableCell>
               <TableCell>
                 <CapabilityMatch dispatch={dispatch} />
@@ -241,11 +224,6 @@ function DispatchTable({ rows, isResponder, onWithdraw }: LedgerProps) {
                   <span className="text-xs text-muted">Not accepted</span>
                 )}
               </TableCell>
-              {isResponder ? (
-                <TableCell>
-                  <DispatchRowActions dispatch={dispatch} onWithdraw={onWithdraw} />
-                </TableCell>
-              ) : null}
             </tr>
           ))}
         </TableBody>
@@ -254,7 +232,7 @@ function DispatchTable({ rows, isResponder, onWithdraw }: LedgerProps) {
   );
 }
 
-function DispatchCards({ rows, isResponder, onWithdraw }: LedgerProps) {
+function DispatchCards({ rows }: { rows: readonly Dispatch[] }) {
   return (
     <ul className="flex flex-col gap-3" aria-label={ASSIGNMENTS_LIST}>
       {rows.map((dispatch) => (
@@ -286,14 +264,10 @@ function DispatchCards({ rows, isResponder, onWithdraw }: LedgerProps) {
             </p>
 
             <p className="text-xs text-muted tabular">
-              ETA {formatDuration(dispatch.etaSec)} · response {formatDuration(dispatch.responseSec)}
+              response {formatDuration(dispatch.responseSec)}
             </p>
 
             <CapabilityMatch dispatch={dispatch} />
-
-            {isResponder ? (
-              <DispatchRowActions dispatch={dispatch} onWithdraw={onWithdraw} mobile />
-            ) : null}
           </Card>
         </li>
       ))}

@@ -1,34 +1,23 @@
 /**
  * ============================================================================
- * CareGrid AI — in-app notifications
+ * CareGrid AI — notification copy, dedupe key and recipient matrix
  * ============================================================================
  *
  * `docs/07 §10.2`, `docs/13 §3.3`, FR-101 / FR-107 / FR-090. **SERVER ONLY.**
  *
- * ---------------------------------------------------------------------------
- * IN-APP IS *STORED*, NOT PUSHED — AND THAT IS THE HONEST VERSION
- * ---------------------------------------------------------------------------
- * `docs/13 §3.3`: "The document is already written by the dedupe transaction. This
- * channel's 'delivery' IS the Firestore document; the client's listener is the
- * transport." And: "Delivered while the client is offline | **On next open**, as an
- * unread row."
+ * The WRITE path is `services/notifications/dispatch.ts` — the unified service
+ * with channels, delivery status and the retry ceiling. What stayed here is the
+ * pure, channel-independent part every channel shares:
  *
- * So there is no FCM registration, no device token, and no push call in this file,
- * and their absence is the design rather than an omission. A responder who has the
- * app closed sees the assignment when they next open it. A dispatcher is told this
- * in the responder-management UI rather than discovering it during an incident,
- * because "you will not be buzzed" is operationally important information and
- * pretending otherwise would be worse than the limitation.
+ *   - `NOTIFICATION_COPY` — every string a human can read, in one reviewable place
+ *   - `FORBIDDEN_NOTIFICATION_CLAIMS` — the overclaims no copy may contain
+ *   - `notificationDedupeKey` — the idempotency key the write path dedupes on
+ *   - `recipientsForEvent` — who is told what, from `docs/07 §10.2`
  *
- * ---------------------------------------------------------------------------
- * FR-107: A NOTIFICATION FAILURE MUST NEVER FAIL THE REQUEST
- * ---------------------------------------------------------------------------
- * Every function here is best-effort and returns a result rather than throwing. A
- * dispatch that succeeded but whose notification write failed is still a dispatch,
- * and a responder is still on their way; returning 500 would tell a dispatcher it
- * failed and invite them to assign a second responder to the same incident. The
- * failure is logged at `warn` so it is visible, and the dispatcher UI reads the
- * dispatch document directly, so the state they act on is never the notification.
+ * In-app remains *stored*, not pushed: the Firestore document IS the delivery and
+ * the client's listener is the transport. There is no FCM registration and no
+ * push call anywhere in this layer, and that absence is the design — `docs/13
+ * §3.3`: delivered-while-offline arrives "on next open, as an unread row".
  *
  * ---------------------------------------------------------------------------
  * THE COPY MAY NOT OVERCLAIM
@@ -48,11 +37,6 @@
 
 import 'server-only';
 
-import { FieldValue } from 'firebase-admin/firestore';
-
-import { adminConfigurationReason, getAdminDb } from '@/lib/server/firebase-admin';
-import { COLLECTIONS } from '@/config/collections';
-import { createLogger } from '@/lib/server/http';
 import type { NotificationSeverity, NotificationType, UserRole } from '@/types';
 
 /* ========================================================================== */
@@ -81,25 +65,6 @@ export type InAppNotificationSpec = {
   readonly link: string | null;
   /** Who caused it, for "Ahmed Khan accepted this". */
   readonly actor: { readonly uid: string; readonly displayName: string } | null;
-};
-
-export type InAppRecipient = {
-  readonly uid: string;
-  readonly role: UserRole;
-  /** `docs/13 §2.1`'s `notifPrefs.inApp`. Absent means the default, which is on. */
-  readonly inAppEnabled?: boolean;
-};
-
-export type NotifyOutcome = {
-  /** `docs/13`'s `NotifyOutcome`. */
-  readonly written: number;
-  /** Suppressed by the dedupe record, i.e. this exact notification already exists. */
-  readonly deduped: number;
-  /** Suppressed because the recipient has in-app notifications turned off. */
-  readonly suppressed: number;
-  readonly failed: number;
-  /** `true` when nothing was attempted — an unconfigured deployment. Not an error. */
-  readonly skipped: boolean;
 };
 
 /* ========================================================================== */
@@ -152,6 +117,36 @@ export const NOTIFICATION_COPY = {
   incidentResolved: (reference: string) => ({
     title: 'Incident resolved',
     body: `Incident ${reference} has been marked resolved.`,
+  }),
+
+  /** To the responder. `dispatch_received` -> assigned responder, `critical`. */
+  dispatchReceived: (reference: string, category: string, priority: string, location: string, distance: string, resources: string, timeReported: string) => ({
+    title: 'New emergency dispatch',
+    body: `You have been dispatched to ${reference} (${category}, ${priority}). Location: ${location}. Distance: ${distance}. Required resources: ${resources}. Reported: ${timeReported}. Open to accept or decline.`,
+  }),
+
+  /** To the dispatcher. `dispatch_accepted` -> dispatcher, `info`. */
+  dispatchAccepted: (reference: string, responderName: string) => ({
+    title: 'Dispatch accepted',
+    body: `${responderName} has accepted the dispatch for ${reference}.`,
+  }),
+
+  /** To the dispatcher. `dispatch_declined` -> dispatcher, `warning`. */
+  dispatchDeclined: (reference: string, responderName: string, reason: string | null) => ({
+    title: 'Dispatch declined',
+    body: `${responderName} declined the dispatch for ${reference}.${reason ? ` Reason: ${reason}` : ''} Choose another responder or keep the incident pending.`,
+  }),
+
+  /** To the reporter and assignee. `incident_update` -> relevant parties, `info` or `warning`. */
+  incidentUpdate: (reference: string, update: string) => ({
+    title: 'Incident update',
+    body: `Incident ${reference}: ${update}`,
+  }),
+
+  /** System notification. `system` -> relevant parties, `info` or `warning` or `critical`. */
+  systemNotification: (title: string, body: string) => ({
+    title,
+    body,
   }),
 
   /** To the reporter. `status_changed` -> reporter for terminal states only. */
@@ -220,132 +215,6 @@ export function notificationDedupeKey(
 }
 
 /* ========================================================================== */
-/* The write                                                                   */
-/* ========================================================================== */
-
-/**
- * Write one in-app notification per recipient. **Never throws.**
- *
- * Each recipient is a SEPARATE write with its own dedupe record, not one batched
- * write. A batch is cheaper, but a batch is all-or-nothing: one bad recipient
- * would cost every other recipient their notification, and the failure would be
- * invisible because nothing would be recorded. Per-recipient writes mean a
- * failure is attributable to a recipient and the rest are unaffected — which is
- * the same reasoning as the per-row audit log.
- */
-export async function notifyInApp(
-  spec: InAppNotificationSpec,
-  recipients: readonly InAppRecipient[],
-  requestId: string,
-): Promise<NotifyOutcome> {
-  if (recipients.length === 0) {
-    return { written: 0, deduped: 0, suppressed: 0, failed: 0, skipped: false };
-  }
-  if (adminConfigurationReason() !== null) {
-    return { written: 0, deduped: 0, suppressed: 0, failed: 0, skipped: true };
-  }
-
-  let written = 0;
-  let deduped = 0;
-  let suppressed = 0;
-  let failed = 0;
-
-  for (const recipient of recipients) {
-    // The preference is checked here rather than in a query so that turning
-    // notifications off takes effect on the next write without a migration.
-    if (recipient.inAppEnabled === false) {
-      suppressed += 1;
-      continue;
-    }
-
-    try {
-      const db = getAdminDb();
-      const key = notificationDedupeKey(recipient.uid, spec);
-      const notificationRef = db.collection(COLLECTIONS.notifications).doc();
-      const dedupeRef = db.collection(COLLECTIONS.notificationReads).doc(key);
-
-      // The dedupe record and the notification are written in ONE transaction, so a
-      // notification can never exist without its guard, nor the guard without the
-      // notification. `docs/13 §3.3` calls this "the dedupe transaction".
-      await db.runTransaction(async (transaction) => {
-        const existing = await transaction.get(dedupeRef);
-        if (existing.exists) return; // already notified; the caller counts this as deduped
-
-        transaction.set(dedupeRef, {
-          key,
-          notificationId: notificationRef.id,
-          recipientUid: recipient.uid,
-          type: spec.type,
-          incidentRef: spec.incidentRef,
-          createdAt: FieldValue.serverTimestamp(),
-        });
-
-        transaction.set(
-          notificationRef,
-          {
-            notificationId: notificationRef.id,
-            recipientId: recipient.uid,
-            recipientRole: recipient.role,
-            type: spec.type,
-            severity: spec.severity,
-            title: spec.title,
-            body: spec.body,
-            incidentId: spec.incidentId,
-            incidentRef: spec.incidentRef,
-            link: spec.link,
-            actorUid: spec.actor?.uid ?? null,
-            actorName: spec.actor?.displayName ?? null,
-            read: false,
-            createdAt: FieldValue.serverTimestamp(),
-            expiresAt: null,
-          },
-          // The notification id is server-generated, so `merge: false` cannot
-          // overwrite anything.
-          { merge: false },
-        );
-      });
-
-      written += 1;
-    } catch (error) {
-      // A duplicate-key race on the dedupe record is the ONE failure that means
-      // "someone else already notified them", and it is not a problem worth
-      // counting as a failure. Firestore surfaces it as ABORTED or ALREADY_EXISTS.
-      const code = readErrorCode(error);
-      if (code === 'ABORTED' || code === 'ALREADY_EXISTS') {
-        deduped += 1;
-        continue;
-      }
-      failed += 1;
-      createLogger(requestId).warn({
-        code: 'DB_UNAVAILABLE',
-        path: 'services.dispatch.notify',
-        status: 503,
-        notificationType: spec.type,
-        // Deliberately NOT `recipient.uid`: an audit line is not the place for a
-        // user identifier, and the notification type plus request id are enough to
-        // find the caller.
-        errorKind: error instanceof Error ? error.name : typeof error,
-      });
-    }
-  }
-
-  return { written, deduped, suppressed, failed, skipped: false };
-}
-
-/**
- * Read a Firestore error's `code`, defensively.
- *
- * The Admin SDK's `FirestoreError` has `.code`, but a `Transaction` can also reject
- * with a plain `Error` from the gRPC layer, and a `code` that is a number rather
- * than the expected string must not be compared as if it were one.
- */
-function readErrorCode(error: unknown): string | null {
-  if (typeof error !== 'object' || error === null) return null;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === 'string' ? code : null;
-}
-
-/* ========================================================================== */
 /* Recipient resolution                                                        */
 /* ========================================================================== */
 
@@ -358,7 +227,7 @@ function readErrorCode(error: unknown): string | null {
  * assigned.
  */
 export function recipientsForEvent(
-  event: 'assigned' | 'accepted' | 'declined' | 'resolved' | 'cancelled',
+  event: 'assigned' | 'accepted' | 'declined' | 'resolved' | 'cancelled' | 'dispatched' | 'dispatch_accepted' | 'dispatch_declined' | 'incident_update' | 'system',
   actors: {
     readonly responderUid: string | null;
     readonly responderName: string | null;
@@ -385,6 +254,10 @@ export function recipientsForEvent(
       // docs/07 §10.2: `incident_assigned` -> the ASSIGNED RESPONDER.
       add(actors.responderUid, 'responder');
       break;
+    case 'dispatched':
+      // `dispatch_received` -> the ASSIGNED RESPONDER (critical priority).
+      add(actors.responderUid, 'responder');
+      break;
     case 'accepted':
     case 'declined':
       // `status_changed` -> all dispatchers; `responder_unavailable` -> the
@@ -392,8 +265,28 @@ export function recipientsForEvent(
       // because "all dispatchers" is a broadcast and this is one person's answer.
       add(actors.dispatcherUid, 'dispatcher');
       break;
+    case 'dispatch_accepted':
+      // `dispatch_accepted` -> the assigning dispatcher.
+      add(actors.dispatcherUid, 'dispatcher');
+      break;
+    case 'dispatch_declined':
+      // `dispatch_declined` -> the assigning dispatcher.
+      add(actors.dispatcherUid, 'dispatcher');
+      break;
     case 'resolved':
       // `incident_resolved` -> reporter, all dispatchers, assignee.
+      add(actors.reporterUid, 'citizen');
+      add(actors.responderUid, 'responder');
+      add(actors.dispatcherUid, 'dispatcher');
+      break;
+    case 'incident_update':
+      // `incident_update` -> reporter, assignee, dispatcher.
+      add(actors.reporterUid, 'citizen');
+      add(actors.responderUid, 'responder');
+      add(actors.dispatcherUid, 'dispatcher');
+      break;
+    case 'system':
+      // `system` notification -> all relevant parties (broadcast).
       add(actors.reporterUid, 'citizen');
       add(actors.responderUid, 'responder');
       add(actors.dispatcherUid, 'dispatcher');

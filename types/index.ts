@@ -32,6 +32,14 @@ export {
   AUDIT_ACTIONS,
 } from '@/types/enums';
 
+/**
+ * Phase 14. Not in the block above because it is deliberately NOT part of the
+ * "stable public surface" list — it is a Phase 9 value the admin review queue
+ * filters on, and importing it by name from `enums` keeps that dependency visible
+ * at the call site instead of implying every enum belongs in the barrel.
+ */
+export { AI_RUN_OUTCOMES, AUDIT_ENTITY_TYPES } from '@/types/enums';
+
 export type * from '@/types/domain';
 
 /**

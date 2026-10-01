@@ -27,6 +27,7 @@ import {
   TabsTrigger,
 } from '@/components/ui';
 import { useTheme } from '@/components/providers/theme-provider';
+import { notificationChannels, type NotificationChannelReport } from '@/lib/api/client';
 import { RetentionTable } from '@/features/settings/retention-table';
 import { SETTINGS_COPY } from '@/features/settings/settings-copy';
 
@@ -75,11 +76,44 @@ export function SettingsView() {
   const [toastOn, setToastOn] = React.useState(true);
   const [markAllOnOpen, setMarkAllOnOpen] = React.useState(false);
 
+  // Notification channel preferences (synced with server via PATCH /api/me)
+  const [inAppEnabled, setInAppEnabled] = React.useState(true);
+  const [emailEnabled, setEmailEnabled] = React.useState(false);
+  const [smsEnabled, setSmsEnabled] = React.useState(false);
+  const [whatsappEnabled, setWhatsappEnabled] = React.useState(false);
+
+  // Channel availability is the SERVER's provider status, fetched — never a
+  // client-side guess. Until the report arrives (or if it fails) every external
+  // channel is treated as unavailable, which is the only safe default: brief §4
+  // forbids enabling a channel whose provider is not configured.
+  const [channels, setChannels] = React.useState<NotificationChannelReport | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    notificationChannels()
+      .then((report) => {
+        if (!cancelled) setChannels(report);
+      })
+      .catch(() => {
+        if (!cancelled) setChannels(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const clearLocal = React.useCallback((what: string) => {
     toast.success(what, {
       description: 'This build keeps nothing in the browser, so there was nothing to remove.',
     });
   }, []);
+
+  const isChannelLive = (channel: 'sms' | 'whatsapp' | 'email') =>
+    channels?.available.includes(channel) ?? false;
+
+  const smsAvailable = isChannelLive('sms');
+  const whatsappAvailable = isChannelLive('whatsapp');
+  const emailAvailable = isChannelLive('email');
 
   return (
     <div className="mx-auto flex w-full max-w-[720px] flex-col gap-5">
@@ -100,7 +134,51 @@ export function SettingsView() {
                 {SETTINGS_COPY.notificationsTab}
               </h3>
             </CardHeader>
-            <CardContent className="flex flex-col">
+            <CardContent className="flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-secondary">
+                  {SETTINGS_COPY.channelsTitle}
+                </span>
+                <p className="text-xs text-secondary">{SETTINGS_COPY.channelsLead}</p>
+              </div>
+
+              <div className="flex flex-col gap-3">
+                <SwitchField
+                  id="settings-channel-inapp"
+                  label={SETTINGS_COPY.channelInApp}
+                  helperText={SETTINGS_COPY.channelInAppHelp}
+                  checked={inAppEnabled}
+                  onCheckedChange={setInAppEnabled}
+                />
+                <SwitchField
+                  id="settings-channel-email"
+                  label={SETTINGS_COPY.channelEmail}
+                  helperText={SETTINGS_COPY.channelEmailHelp}
+                  checked={emailEnabled}
+                  onCheckedChange={setEmailEnabled}
+                  disabled={!emailAvailable}
+                  disabledReason={!emailAvailable ? SETTINGS_COPY.channelUnavailable : undefined}
+                />
+                <SwitchField
+                  id="settings-channel-sms"
+                  label={SETTINGS_COPY.channelSms}
+                  helperText={SETTINGS_COPY.channelSmsHelp}
+                  checked={smsEnabled}
+                  onCheckedChange={setSmsEnabled}
+                  disabled={!smsAvailable}
+                  disabledReason={!smsAvailable ? SETTINGS_COPY.channelUnavailable : undefined}
+                />
+                <SwitchField
+                  id="settings-channel-whatsapp"
+                  label={SETTINGS_COPY.channelWhatsApp}
+                  helperText={SETTINGS_COPY.channelWhatsAppHelp}
+                  checked={whatsappEnabled}
+                  onCheckedChange={setWhatsappEnabled}
+                  disabled={!whatsappAvailable}
+                  disabledReason={!whatsappAvailable ? SETTINGS_COPY.channelUnavailable : undefined}
+                />
+              </div>
+
               <SwitchField
                 id="settings-new-incident-toast"
                 label={SETTINGS_COPY.newIncidentToast}

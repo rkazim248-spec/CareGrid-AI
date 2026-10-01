@@ -40,7 +40,7 @@ import { FieldValue, type Firestore, type Transaction } from 'firebase-admin/fir
 
 import { getAdminDb } from '@/lib/server/firebase-admin';
 import { createLogger } from '@/lib/server/http';
-import type { AuditAction, UserRole } from '@/types/enums';
+import type { AuditAction, AuditEntityType, UserRole } from '@/types/enums';
 
 export type AuditSeverity = 'info' | 'warn' | 'critical';
 
@@ -49,7 +49,7 @@ export type AuditInput = {
   /** `'anonymous'` for an unauthenticated actor. */
   actorUid: string;
   action: AuditAction;
-  entityType: 'incident' | 'user' | 'responder' | 'dispatch' | 'config' | 'auth' | 'notification';
+  entityType: AuditEntityType;
   entityId: string;
   /** The human-facing reference, e.g. `CG-7QK4M2`, when there is one. */
   incidentRef?: string | null;

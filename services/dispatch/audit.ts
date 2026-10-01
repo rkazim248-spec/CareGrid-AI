@@ -60,17 +60,24 @@ import type { AuditAction, UserRole } from '@/types';
 /* The document                                                                */
 /* ========================================================================== */
 
-/** `docs/07 §11.5`'s `entityType`. */
-export const AUDIT_ENTITY_TYPES = [
-  'incident',
-  'user',
-  'responder',
-  'dispatch',
-  'config',
-  'auth',
-  'notification',
-] as const;
-export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[number];
+/**
+ * `docs/07 §11.5`'s `entityType`.
+ *
+ * RE-EXPORTED, not declared. Phase 14 added the admin audit-log filter, which
+ * needs this list at the `validators/` layer, and `validators/` must not import
+ * from `services/` — that would drag `firebase-admin` into a module documented as
+ * provably runnable on both sides of the wire (`validators/index.ts`). So the
+ * declaration moved DOWN to `types/enums.ts`, which imports nothing, and this
+ * name is kept as a re-export because `services/dispatch/index.ts` and existing
+ * callers already import it from here.
+ *
+ * Two arrays with the same name and different contents is the exact drift this
+ * consolidation removes: the old copy would have kept working after `aiReview` was
+ * added, so the audit filter would silently omit every AI review.
+ */
+export { AUDIT_ENTITY_TYPES } from '@/types/enums';
+
+import type { AuditEntityType } from '@/types/enums';
 
 /**
  * The audit document, minus the fields the caller supplies mechanically.

@@ -43,6 +43,12 @@ export const POST = withRequest(
     // suspended caller must be able to discover that they exist.
     auth: 'required',
     allowInactiveAccount: true,
+    // The gate that actually blocked this route. `allowInactiveAccount` waives
+    // step 5 (status); this waives step 4 (existence). Without it the route that
+    // CREATES `users/{uid}` was rejected for `users/{uid}` not existing, so no
+    // new account could ever be bootstrapped and every sign-up — email and
+    // "Continue with Google" alike — ended on `authStatus: 'error'`.
+    allowMissingUserDoc: true,
     // docs/10 §17.2: 10 per hour per uid.
     rateLimit: 'me.bootstrap',
   },

@@ -120,6 +120,11 @@ const DEFAULT_MESSAGE: Record<string, string> = {
   MAINTENANCE_DISABLED: 'That job is not enabled in this deployment.',
   NOTIFICATION_DISABLED: 'That notification channel is not available in this deployment.',
   CAPABILITY_DISABLED: 'That feature is not enabled in this deployment.',
+  AI_RESULT_IMMUTABLE:
+    'The AI result cannot be changed. Record a review decision instead — the model’s answer is kept as history.',
+  NOT_IN_REVIEW_QUEUE: 'That incident is not waiting for AI review.',
+  REVIEW_ALREADY_RECORDED:
+    'Someone has already reviewed this incident. Their decision is on the record and was not overwritten.',
   SELF_ROLE_CHANGE_FORBIDDEN: 'You cannot change your own role.',
   SELF_DISABLE_FORBIDDEN: 'You cannot suspend your own account.',
   SERVICE_UNAVAILABLE:

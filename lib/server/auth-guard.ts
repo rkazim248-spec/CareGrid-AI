@@ -21,9 +21,13 @@
  *   3. Account age (auth_time)?    → 403 REAUTH_REQUIRED    (privileged actions only)
  *   4. `users/{uid}` exists?       → 403 ACCOUNT_UNAVAILABLE (someone has an Auth
  *                                                            account but no profile)
+ *                                    EXEMPT for `POST /api/me/bootstrap`, which
+ *                                    CREATES that document — see
+ *                                    `allowMissingUserDoc`.
  *   5. Account active?             → 403 ACCOUNT_UNAVAILABLE (suspended / pending)
  *   6. Read the AUTHORITATIVE role → `users/{uid}.role`
- *   7. Claim matches that role?    → 403 ROLE_MISMATCH      + AUDIT (drift)
+ *   7. A claim that DISAGREES?     → 403 ROLE_MISMATCH      + AUDIT (drift)
+ *                                    An ABSENT claim is not drift and is allowed.
  *   8. Role permits this action?   → 403 FORBIDDEN          + AUDIT for privileged
  *
  * Step 6 before step 7 is the whole design. The claim is a MIRROR used only by
@@ -34,6 +38,12 @@
  * Step 7 is not "fix it and carry on". A mismatch is a 403 and an audit entry,
  * because a mismatch means two systems disagree about who this person is, and
  * silently preferring either one hides a bug that could be an attack.
+ *
+ * Step 7 fires only when a claim EXISTS and disagrees. Failing closed on a
+ * MISSING claim is what made this product entirely unusable: `role` is not a
+ * reserved Firebase claim, so it is absent unless something mirrors it, and
+ * nothing did. Every authenticated request answered `ROLE_MISMATCH` while the
+ * whole test suite stayed green.
  *
  * ---------------------------------------------------------------------------
  * `checkRevoked: true`
@@ -82,6 +92,37 @@ export type RequireUserOptions = {
    * different reason: a suspended user must still be able to report a logout.
    */
   allowInactiveAccount?: boolean;
+  /**
+   * Skip the `users/{uid}` EXISTENCE gate (step 4) as well.
+   *
+   * ---------------------------------------------------------------------------
+   * THIS EXISTS BECAUSE `POST /api/me/bootstrap` WAS UNREACHABLE
+   * ---------------------------------------------------------------------------
+   * The bootstrap route exists to CREATE `users/{uid}`. Step 4 rejected the
+   * request precisely because that document did not exist — so the one route
+   * able to repair a missing profile could never be reached. The consequence
+   * was total, not partial: sign-up created the Firebase user, `GET /api/me`
+   * answered `403 ACCOUNT_UNAVAILABLE`, the session provider correctly tried to
+   * bootstrap, bootstrap answered `403 ACCOUNT_UNAVAILABLE` again, and the
+   * provider fell through to `authStatus: 'error'`. Every new account — email
+   * sign-up and "Continue with Google" alike — was stuck on the form with no way
+   * forward. `allowInactiveAccount` could not fix it, because that flag waives
+   * step 5 (status), not step 4 (existence).
+   *
+   * ---------------------------------------------------------------------------
+   * WHY DEFAULTS ARE `citizen` / `active`, AND WHY THAT IS NOT A BACKDOOR
+   * ---------------------------------------------------------------------------
+   * A caller with no document has no role to read, so one must be synthesised
+   * for the `AuthedUser` shape. `citizen` is the only role a public sign-up can
+   * ever receive (docs/22 §1), so this grants nothing.
+   *
+   * It is also inert even if it were wrong: `bootstrapUser` writes the role from
+   * its own `PUBLIC_ROLE` constant and never reads `ctx.user.role`, so the value
+   * this flag invents cannot reach a document. The escalation guards are the
+   * `.strict()` schema, `assertNoRoleInBody()`, the constant, and
+   * `users: allow write: if false` — none of which are this flag.
+   */
+  allowMissingUserDoc?: boolean;
 };
 
 /**
@@ -152,12 +193,41 @@ export async function requireUser(req: Request, options: RequireUserOptions): Pr
   const snapshot = await getAdminDb().collection('users').doc(decoded.uid).get();
   const doc = snapshot.exists ? snapshot.data() : null;
 
-  if (!doc) {
+  if (!doc && !options.allowMissingUserDoc) {
     // An Auth account with no `users/{uid}`: sign-up succeeded but bootstrap
     // never ran, or the document was deleted. Either way the caller is not a
     // CareGrid user yet, and the correct answer is the same one as a suspended
     // account — not a 500 that invites a retry loop.
     throw new AppError({ code: 'ACCOUNT_UNAVAILABLE' });
+  }
+
+  /*
+   * The three shapes below are the whole of step 4-7. They are spelled out
+   * separately rather than collapsed because they have genuinely different
+   * answers, and the two exemptions do not overlap.
+   */
+  if (!doc) {
+    // Reachable ONLY via `allowMissingUserDoc`, i.e. ONLY bootstrap. Steps 5, 6
+    // and 7 are all about a document that does not exist, so there is nothing to
+    // gate on and nothing to compare — in particular there is no role to drift
+    // from, so the claim check is skipped rather than answered with a guess.
+    log.debug({
+      actorUid: decoded.uid,
+      code: 'BOOTSTRAP_PENDING',
+      method: req.method,
+      path: pathOf(req),
+    });
+
+    return {
+      uid: decoded.uid,
+      // The only role a public sign-up can receive; see the option's note.
+      role: 'citizen' as UserRole,
+      status: 'active' as AccountStatus,
+      displayName: typeof decoded.name === 'string' ? decoded.name : '',
+      email: typeof decoded.email === 'string' ? decoded.email : '',
+      authTimeSec: decoded.auth_time ?? 0,
+      token: decoded,
+    };
   }
 
   const status = doc.status as AccountStatus;
@@ -177,11 +247,39 @@ export async function requireUser(req: Request, options: RequireUserOptions): Pr
   }
 
   /* --- 7. claim drift ---------------------------------------------------- */
+  //
+  // THE DOCUMENT IS THE AUTHORITY. The claim is a MIRROR, and it is read here
+  // only to notice that the mirror has gone stale — never to decide who someone
+  // is.
+  //
+  // An ABSENT claim is therefore not drift, and must not deny the request. It
+  // was, and the effect was that authentication was impossible for every user:
+  // `role` is not a reserved Firebase claim, so it only exists on a token if
+  // something called `setCustomUserClaims({ role })`. Nothing in this codebase
+  // ever did — the sole claim write set `displayName` — so `decoded.role` was
+  // `undefined` for every caller, the comparison below was
+  // `null !== 'citizen'`, and `ROLE_MISMATCH` was returned by every authenticated
+  // route in the product. Sign-up was not merely broken; nothing worked.
+  //
+  // Failing closed on a missing mirror would also be the wrong instinct: the
+  // authoritative value is in `doc.role`, read in THIS request from the Admin
+  // SDK, so there is no trust gap to close. Denying here would only mean a
+  // deployment that never bothered to mirror claims locks out all its users.
   const claimRole = typeof decoded.role === 'string' ? decoded.role : null;
-  if (claimRole !== role) {
-    // Audited at warn: this is the signal that something changed a role without
-    // running the claim-mirror step, or that a token is being replayed after a
-    // role change. Both are worth a human look.
+
+  if (claimRole === null) {
+    // Not an error. Debug, not warn: an unmirrored claim is the expected state
+    // for most accounts and would drown the real signal in noise.
+    log.debug({
+      actorUid: decoded.uid,
+      actorRole: role,
+      code: 'ROLE_CLAIM_UNMIRRORED',
+      path: pathOf(req),
+    });
+  } else if (claimRole !== role) {
+    // A claim that EXISTS and disagrees is a real signal — someone changed a
+    // role without the mirror step, or a token is being replayed after a role
+    // change. Still audited at warn.
     await auditLog({
       requestId: options.requestId,
       actorUid: decoded.uid,
@@ -313,6 +411,62 @@ export function assertReasonPresent(reason: unknown, minLength = 10): void {
       details: [{ field: 'reason', issue: `Must be at least ${minLength} characters.` }],
     });
   }
+}
+
+/**
+ * The fields that record what the MODEL said, as opposed to what a human decided.
+ *
+ * Phase 14. Every key here is an append-only record of a real prediction. If a
+ * reviewer — or a route with a `...body` spread — could set one, then the audit
+ * trail would no longer distinguish "the model was wrong" from "somebody
+ * back-dated a confident answer", and the entire low-confidence review queue
+ * becomes theatre. Nothing downstream can recover that distinction once lost.
+ *
+ * `reviewedBy`/`reviewedAt` are listed too, even though a review legitimately
+ * sets them: they are written by the review service from the AUTHENTICATED
+ * caller, never read from a body. A caller-supplied reviewer identity is a
+ * forged reviewer identity no matter what the field is called.
+ */
+const AI_RESULT_FIELDS = [
+  'aiConfidence',
+  'aiRuns',
+  'aiTriage',
+  'aiSummary',
+  'aiRationale',
+  'aiSuggestions',
+  'triageSource',
+  'aiModel',
+  'aiReviewedBy',
+  'aiReviewedAt',
+  'reviewedBy',
+  'reviewedAt',
+] as const;
+
+/**
+ * Reject a body that tries to write a field recording the AI's own output.
+ *
+ * Defence in depth in exactly the same shape as `assertNoRoleInBody()`, and for
+ * the same reason: the review schemas are `.strict()`, but a strict schema only
+ * proves the ROUTE rejects the field. If a future refactor spreads the body into
+ * the document, or adds the field to the schema for a legitimate reason and
+ * forgets this list, `.strict()` is no longer the thing standing between a
+ * caller and the immutable record. This function is.
+ *
+ * It runs BEFORE schema validation, on the raw body, so the refusal is the
+ * specific `403 AI_RESULT_IMMUTABLE` rather than a generic "unrecognised key"
+ * that would read to a developer as a typo rather than as a refusal.
+ */
+export function assertNoAiResultInBody(body: unknown): void {
+  if (typeof body !== 'object' || body === null) return;
+  const record = body as Record<string, unknown>;
+  const attempted = AI_RESULT_FIELDS.filter((field) => field in record);
+  if (attempted.length === 0) return;
+  throw new AppError({
+    code: 'AI_RESULT_IMMUTABLE',
+    message:
+      'The AI result cannot be changed. Record a review decision instead — the model’s answer is kept as history.',
+    details: attempted.map((field) => ({ field, issue: 'Server-owned. Record a review decision instead.' })),
+  });
 }
 
 /* ========================================================================== */

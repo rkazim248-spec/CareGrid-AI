@@ -65,6 +65,11 @@ import {
   signUploadBodySchema,
   signUploadResponseSchema,
 } from '@/validators/upload';
+import {
+  acceptDispatchBodySchema,
+  rejectDispatchBodySchema,
+  respondResponseSchema,
+} from '@/validators/dispatch';
 
 
 /* ========================================================================== */
@@ -641,6 +646,109 @@ export function adminSystemHealth(options: { signal?: AbortSignal } = {}): Promi
     }>;
     problems: readonly string[];
   }>;
+}
+
+/* ========================================================================== */
+/* Phase 13 — Dispatch responses                                              */
+/* ========================================================================== */
+
+/**
+ * `POST /api/dispatches/:dispatchId` — responder accepts their assignment.
+ */
+export function dispatchAccept(
+  dispatchId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<z.infer<typeof respondResponseSchema>> {
+  return apiFetch<unknown>(`/api/dispatches/${dispatchId}`, {
+    method: 'POST',
+    body: acceptDispatchBodySchema.parse({}),
+    signal: options.signal,
+    parse: (data) => respondResponseSchema.safeParse(data),
+  }) as Promise<z.infer<typeof respondResponseSchema>>;
+}
+
+/**
+ * `PUT /api/dispatches/:dispatchId` — responder declines their assignment.
+ */
+export function dispatchDecline(
+  dispatchId: string,
+  input: z.input<typeof rejectDispatchBodySchema>,
+  options: { signal?: AbortSignal } = {},
+): Promise<z.infer<typeof respondResponseSchema>> {
+  return apiFetch<unknown>(`/api/dispatches/${dispatchId}`, {
+    method: 'PUT',
+    body: rejectDispatchBodySchema.parse(input),
+    signal: options.signal,
+    parse: (data) => respondResponseSchema.safeParse(data),
+  }) as Promise<z.infer<typeof respondResponseSchema>>;
+}
+
+/* ========================================================================== */
+/* Phase 13 — Notification read state + channel availability                   */
+/* ========================================================================== */
+
+const NOTIFICATION_CHANNELS = ['in_app', 'sms', 'whatsapp', 'email', 'push'] as const;
+
+const notificationMarkResponseSchema = z.object({ markedRead: z.number().int().min(0) });
+
+const notificationChannelReportSchema = z.object({
+  channels: z.object({
+    available: z.array(z.enum(NOTIFICATION_CHANNELS)),
+    unavailable: z.array(
+      z.object({ channel: z.enum(NOTIFICATION_CHANNELS), reason: z.string() }),
+    ),
+  }),
+});
+
+export type NotificationChannelReport = z.infer<
+  typeof notificationChannelReportSchema
+>['channels'];
+
+/**
+ * `PATCH /api/notifications` — mark ONE of the caller's notifications read.
+ * Ownership is the server's concern (the uid comes from the verified token);
+ * the client only ever names its own notification.
+ */
+export function notificationMarkRead(
+  notificationId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<{ markedRead: number }> {
+  return apiFetch<unknown>('/api/notifications', {
+    method: 'PATCH',
+    body: z.object({ notificationId: z.string().min(1).max(200) }).parse({ notificationId }),
+    signal: options.signal,
+    parse: (data) => notificationMarkResponseSchema.safeParse(data),
+  }) as Promise<{ markedRead: number }>;
+}
+
+/** `PATCH /api/notifications` — mark every unread notification of the caller read. */
+export function notificationMarkAllRead(
+  options: { signal?: AbortSignal } = {},
+): Promise<{ markedRead: number }> {
+  return apiFetch<unknown>('/api/notifications', {
+    method: 'PATCH',
+    body: z.object({}).strict().parse({}),
+    signal: options.signal,
+    parse: (data) => notificationMarkResponseSchema.safeParse(data),
+  }) as Promise<{ markedRead: number }>;
+}
+
+/**
+ * `GET /api/notifications` — which channels the SERVER can actually deliver on.
+ *
+ * The settings screen derives every channel switch's availability from this, so
+ * a channel whose provider is not configured can never be enabled by a client.
+ */
+export function notificationChannels(
+  options: { signal?: AbortSignal } = {},
+): Promise<NotificationChannelReport> {
+  return apiFetch<unknown>('/api/notifications', {
+    method: 'GET',
+    signal: options.signal,
+    parse: (data) => notificationChannelReportSchema.safeParse(data),
+  }).then(
+    (parsed) => (parsed as { channels: NotificationChannelReport }).channels,
+  );
 }
 
 export type { MeResponse };

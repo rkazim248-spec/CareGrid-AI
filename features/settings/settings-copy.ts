@@ -5,6 +5,8 @@
  *  - "Reduce" motion can only ever make motion LESS (docs/04 §16.3).
  *  - The retention table states real periods, and the two clear buttons state
  *    that they are local-only (docs/04 §13.16 Retention copy, US-042 AC3).
+ *  - Notification channels that have no provider are DISABLED with a reason,
+ *    never hidden (docs/13 §12, FR-105/106).
  */
 
 export const SETTINGS_COPY = {
@@ -22,6 +24,21 @@ export const SETTINGS_COPY = {
   markAllReadOnOpenHelp: 'Opening the notification list clears its unread count.',
   denseQueue: 'Dense queue rows',
   denseQueueHelp: 'Tighter rows in lists. Available in this build.',
+
+  // Notification channel preferences
+  channelsTitle: 'Notification channels',
+  channelsLead: 'Choose how you want to receive alerts. Channels without a provider are unavailable.',
+  channelInApp: 'In-app',
+  channelInAppHelp: 'Receive notifications inside CareGrid AI. Always available.',
+  channelEmail: 'Email',
+  channelEmailHelp: 'Receive notifications by email. Requires email provider configuration.',
+  channelSms: 'SMS',
+  channelSmsHelp: 'Receive notifications by SMS. Requires SMS provider configuration.',
+  channelWhatsApp: 'WhatsApp',
+  channelWhatsAppHelp: 'Receive notifications via WhatsApp. Requires WhatsApp Business API configuration.',
+
+  channelUnavailable: 'Unavailable — no provider configured',
+  channelUnavailableHelp: 'This channel cannot be enabled because no provider is configured in this deployment.',
 
   timezoneLabel: 'Timezone',
   timezoneHelp: 'Every timestamp in CareGrid AI is shown in this zone.',

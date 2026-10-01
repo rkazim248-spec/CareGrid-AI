@@ -125,6 +125,17 @@ export const RATE_LIMIT_RULES: Readonly<Record<string, RateLimitRule>> = {
    *   60/min is far above how often a dashboard re-requests or a person changes a
    *   filter, and far below anything that would make the scan a denial-of-service.
    */
+  /**
+   * 120/min per uid. `docs/10 §17.1`.
+   *
+   *   Marking a notification read is ONE document write and is the action a client
+   *   performs most often — the bell reloads, and clicking through a list marks
+   *   several. It also has the lowest ceiling worth worrying about, which is exactly why
+   *   it needs one: `brief §6` asks for notification traffic to be bounded, and this
+   *   is the endpoint that would be abused.
+   */
+  'notifications.read': { routeKey: 'notifications.read', limit: 120, windowSec: 60, subject: 'uid' },
+
   'analytics.read': { routeKey: 'analytics.read', limit: 60, windowSec: 60, subject: 'uid' },
 
   'admin.systemHealth': { routeKey: 'admin.systemHealth', limit: 30, windowSec: 60, subject: 'uid' },

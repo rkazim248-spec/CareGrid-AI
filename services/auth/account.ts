@@ -483,10 +483,27 @@ function mergeNotifPrefs(
  *
  * Best-effort and non-fatal. `firestore.rules` gives the client no write access
  * to `users/{uid}`, so this is the only place the two copies are reconciled.
+ *
+ * ---------------------------------------------------------------------------
+ * READ-MODIFY-WRITE, BECAUSE `setCustomUserClaims` REPLACES THE WHOLE OBJECT
+ * ---------------------------------------------------------------------------
+ * The single-argument call it replaces read as an obvious "set the display name"
+ * and so looked harmless. It was not: `setCustomUserClaims(uid, claims)` overwrites
+ * the ENTIRE custom-claims object, so every other claim on the token was deleted
+ * on each profile save. The moment a `role` mirror was added, saving a profile
+ * would quietly strip it — and since a role change can take effect without the
+ * claim being re-read, the symptom would be an intermittent, unreproducible
+ * `ROLE_MISMATCH` on an account that had just been correctly provisioned.
+ *
+ * So the existing claims are read and merged into. A lost update is still
+ * possible if two writers race, which is why the claim is only ever a mirror of
+ * something the Firestore document already holds authoritatively.
  */
 async function syncAuthDisplayName(uid: string, displayName: string): Promise<void> {
   try {
-    await getAdminAuth().setCustomUserClaims(uid, { displayName });
+    const auth = getAdminAuth();
+    const existing = (await auth.getUser(uid)).customClaims ?? {};
+    await auth.setCustomUserClaims(uid, { ...existing, displayName });
   } catch {
     // Intentionally silent. The Firestore documents are the source of truth.
   }

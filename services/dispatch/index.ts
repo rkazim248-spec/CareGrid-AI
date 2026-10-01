@@ -41,19 +41,20 @@ export {
   PRIVILEGED_ACTIONS,
   UnsafeAuditFieldError,
   type AppendAuditInput,
-  type AuditEntityType,
   type AuditLogDocument,
 } from '@/services/dispatch/audit';
+
+// `AuditEntityType` moved to `@/types/enums` in Phase 14 so the admin audit-log
+// filter can read the list without importing `firebase-admin`. Re-exported here
+// so existing importers of this barrel keep working.
+export type { AuditEntityType } from '@/types/enums';
 
 export {
   FORBIDDEN_NOTIFICATION_CLAIMS,
   NOTIFICATION_COPY,
   notificationDedupeKey,
-  notifyInApp,
   recipientsForEvent,
-  type InAppRecipient,
   type InAppNotificationSpec,
-  type NotifyOutcome,
 } from '@/services/dispatch/notify';
 
 export {
