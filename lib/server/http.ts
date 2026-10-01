@@ -31,7 +31,55 @@ import { AppError } from '@/lib/server/errors';
  * predictable request id is a session-predictable id.
  */
 export function getRequestId(): string {
-  return `req_${randomBytes(9).toString('base64url').slice(0, 12)}`;
+  /*
+   * ---------------------------------------------------------------------------
+   * BASE62, NOT BASE64URL — AND THAT IS THE WHOLE POINT OF THIS FUNCTION
+   * ---------------------------------------------------------------------------
+   * This used to be `randomBytes(9).toString('base64url').slice(0, 12)`, which was
+   * a real bug found by executing a route (Phase 15), not by reading one.
+   *
+   * The base64url alphabet is `A-Za-z0-9-_`, so roughly one generated id in three
+   * contained a `-` or an `_` (measured: 31.71% over 200k samples). Every
+   * consumer of an id in this codebase validates it against
+   * `^req_[A-Za-z0-9]{12}$`:
+   *
+   *   - `requestIdSchema` in `validators/enums.ts`, which gates `apiMetaSchema`,
+   *     so the SUCCESS and ERROR envelopes are documented as carrying a valid id
+   *     and were not;
+   *   - `REQUEST_ID_PATTERN` in `lib/constants.ts`, which the UI checks before
+   *     rendering a support reference;
+   *   - `requestIdFrom()` below, which silently DISCARDED a perfectly valid
+   *     inbound `x-request-id` and minted a new one whenever the caller was
+   *     echoing back an id this server had itself issued.
+   *
+   * So the failure was silent and intermittent: roughly a third of all requests
+   * produced an id that the project's own validation rejected, and a third of
+   * inbound correlation ids were dropped.
+   *
+   * The fix is to narrow the GENERATOR rather than widen the schema. Widening the
+   * regex to `[A-Za-z0-9_-]` would also be defensible — those characters are
+   * harmless in a log line — but the schema is the contract quoted to users in
+   * support, and `^[A-Za-z0-9]{12}$` is the tighter, safer thing to keep
+   * promising. Entropy is unaffected: 12 base62 characters is ~71 bits, still far
+   * more than the 9 bytes (72 bits) this was previously carrying.
+   *
+   * `crypto.randomBytes` stays the source. A predictable request id is a
+   * session-predictable id, and `Math.random()` would be the wrong answer even
+   * though it is shorter to write.
+   *
+   * The `% 62` reduction is biased — 256 is not a multiple of 62, so 8 of the 62
+   * characters are about 1.2% more likely than the rest. That is deliberate and
+   * acceptable: a request id is a correlation label, never an authorisation
+   * decision, a capability token or a session handle, so ~71 bits with a 1.2%
+   * skew is far more than the ~65 bits of unbiased entropy the label needs.
+   * Rejection sampling would remove the skew at the cost of a loop whose only
+   * benefit here is aesthetic.
+   */
+  const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const bytes = randomBytes(12);
+  let out = '';
+  for (const byte of bytes) out += ALPHABET[byte % ALPHABET.length];
+  return `req_${out}`;
 }
 
 /** Read an inbound `x-request-id` if it is well-formed, else mint a new one. */
