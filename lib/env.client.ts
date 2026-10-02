@@ -50,8 +50,85 @@ export class EnvError extends Error {
   }
 }
 
-function required(name: string, hint: string): string {
-  const value = process.env[name];
+/**
+ * A STATIC snapshot of every public variable this module can read.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS: the build-time inlining trap
+ * ---------------------------------------------------------------------------
+ * Next.js replaces `process.env.NEXT_PUBLIC_FOO` with the literal string value
+ * at build time, but ONLY when it sees a literal member expression. A COMPUTED
+ * access — `process.env[name]`, where `name` is a variable — is never rewritten.
+ *
+ * On the server that mistake is invisible: Node has a real `process.env`, so
+ * the lookup succeeds and every test passes. In the client bundle the lookup
+ * hits an empty object and EVERY variable reads `undefined`.
+ *
+ * The reason this survived review is that it contradicted all the available
+ * evidence. `.env.local` held every key, the server-side REST probe
+ * authenticated successfully, and the Firebase project was genuinely healthy —
+ * only the browser disagreed. The symptom that reached the user was
+ * "Something went wrong. Try again.", because a missing config throws an
+ * `EnvError` from deep inside the auth layer, where it is indistinguishable
+ * from a real Firebase failure.
+ *
+ * So: one literal per variable, written out explicitly, is the only form the
+ * bundler can see. Adding a variable means adding a line here, and the
+ * `PublicEnvName` type then rejects any caller that tries to read a name that
+ * is not in this list. That friction is deliberate.
+ *
+ * WHY A FUNCTION AND NOT A MODULE-LEVEL CONSTANT
+ * The literals must stay literal for the bundler, but the read must happen at
+ * CALL time rather than import time. A `const PUBLIC_ENV = {...}` snapshot is
+ * frozen the moment the module loads, which silently breaks anything that
+ * changes the environment afterwards — notably `tests/unit/app-providers-boot`,
+ * which swaps variables to exercise the "not configured" path. Next.js
+ * substitutes these literals at build time regardless of the surrounding
+ * function, so laziness costs nothing in the browser and preserves the ability
+ * to test the unconfigured path honestly.
+ *
+ * `undefined` is a legitimate value: it is how a genuinely unset variable is
+ * represented, and every accessor below decides what that means.
+ */
+type PublicEnvName =
+  | 'NEXT_PUBLIC_APP_ENV'
+  | 'NEXT_PUBLIC_APP_URL'
+  | 'NEXT_PUBLIC_FIREBASE_API_KEY'
+  | 'NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN'
+  | 'NEXT_PUBLIC_FIREBASE_PROJECT_ID'
+  | 'NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET'
+  | 'NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID'
+  | 'NEXT_PUBLIC_FIREBASE_APP_ID'
+  | 'NEXT_PUBLIC_FIREBASE_USE_EMULATORS'
+  | 'NEXT_PUBLIC_GOOGLE_MAPS_API_KEY'
+  | 'NEXT_PUBLIC_MAP_STYLE'
+  | 'NEXT_PUBLIC_MAP_STYLE_ID'
+  | 'NEXT_PUBLIC_MAP_ZOOM_DEFAULT'
+  | 'NEXT_PUBLIC_MAP_ZOOM_MAX'
+  | 'NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN';
+
+function publicEnv(): Readonly<Record<PublicEnvName, string | undefined>> {
+  return {
+    NEXT_PUBLIC_APP_ENV: process.env.NEXT_PUBLIC_APP_ENV,
+    NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
+    NEXT_PUBLIC_FIREBASE_API_KEY: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+    NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+    NEXT_PUBLIC_FIREBASE_PROJECT_ID: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+    NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+    NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+    NEXT_PUBLIC_FIREBASE_APP_ID: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+    NEXT_PUBLIC_FIREBASE_USE_EMULATORS: process.env.NEXT_PUBLIC_FIREBASE_USE_EMULATORS,
+    NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY,
+    NEXT_PUBLIC_MAP_STYLE: process.env.NEXT_PUBLIC_MAP_STYLE,
+    NEXT_PUBLIC_MAP_STYLE_ID: process.env.NEXT_PUBLIC_MAP_STYLE_ID,
+    NEXT_PUBLIC_MAP_ZOOM_DEFAULT: process.env.NEXT_PUBLIC_MAP_ZOOM_DEFAULT,
+    NEXT_PUBLIC_MAP_ZOOM_MAX: process.env.NEXT_PUBLIC_MAP_ZOOM_MAX,
+    NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN: process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN,
+  };
+}
+
+function required(name: PublicEnvName, hint: string): string {
+  const value = publicEnv()[name];
   if (value === undefined || value.trim() === '') {
     throw new EnvError(name, hint);
   }
@@ -63,7 +140,7 @@ function required(name: string, hint: string): string {
  * docs/10 §12.1 requires https in production; an http app URL in prod would
  * make the CSRF origin check trivially bypassable by a network attacker.
  */
-function requiredUrl(name: string, hint: string): string {
+function requiredUrl(name: PublicEnvName, hint: string): string {
   const raw = required(name, hint);
   let parsed: URL;
   try {
@@ -82,13 +159,13 @@ function requiredUrl(name: string, hint: string): string {
   return parsed.origin + parsed.pathname.replace(/\/+$/, '');
 }
 
-function optional(name: string, fallback: string): string {
-  const value = process.env[name];
+function optional(name: PublicEnvName, fallback: string): string {
+  const value = publicEnv()[name];
   return value === undefined || value.trim() === '' ? fallback : value.trim();
 }
 
-function optionalBoolean(name: string, fallback: boolean): boolean {
-  const value = process.env[name]?.trim().toLowerCase();
+function optionalBoolean(name: PublicEnvName, fallback: boolean): boolean {
+  const value = publicEnv()[name]?.trim().toLowerCase();
   if (value === undefined || value === '') return fallback;
   if (value === 'true' || value === '1') return true;
   if (value === 'false' || value === '0') return false;
@@ -169,7 +246,11 @@ export function isEmulatorMode(): boolean {
  * works.
  */
 export function isFirebaseConfigured(): boolean {
-  const required_ = [
+  // Reads `PUBLIC_ENV`, never `process.env[name]` — see the note on
+  // `PUBLIC_ENV` above. This function is the one that decides whether the app
+  // shows the "Firebase is not configured" panel, so a false `false` here tells
+  // the user their `.env.local` is broken when it is perfectly correct.
+  const required_: readonly PublicEnvName[] = [
     'NEXT_PUBLIC_FIREBASE_API_KEY',
     'NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN',
     'NEXT_PUBLIC_FIREBASE_PROJECT_ID',
@@ -178,7 +259,7 @@ export function isFirebaseConfigured(): boolean {
     'NEXT_PUBLIC_FIREBASE_APP_ID',
   ];
   return required_.every((name) => {
-    const value = process.env[name];
+    const value = publicEnv()[name];
     return typeof value === 'string' && value.trim() !== '';
   });
 }
@@ -298,7 +379,7 @@ export function isMapsConfigured(): boolean {
   return getPublicMapsConfig().browserKey !== null;
 }
 
-function clampNumber(name: string, fallback: number, min: number, max: number): number {
+function clampNumber(name: PublicEnvName, fallback: number, min: number, max: number): number {
   const raw = optional(name, '');
   if (raw === '') return fallback;
   const parsed = Number(raw);
@@ -348,3 +429,4 @@ export function getPublicMapboxConfig(): PublicMapboxConfig {
 export function isMapboxConfigured(): boolean {
   return getPublicMapboxConfig().accessToken !== null;
 }
+

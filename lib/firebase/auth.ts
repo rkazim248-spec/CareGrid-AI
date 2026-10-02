@@ -108,6 +108,20 @@ export type AuthErrorCode =
   | 'AUTH_TOO_MANY_ATTEMPTS'
   | 'AUTH_RESET_FAILED'
   | 'AUTH_UNAVAILABLE'
+  /**
+   * The Firebase project's own configuration is wrong: bad API key, unknown or
+   * unauthorised `authDomain`, project not found, or the SDK was used before
+   * `initializeApp`. Distinct from `AUTH_OPERATION_NOT_ALLOWED`, which means the
+   * project is fine but the *provider* is switched off.
+   *
+   * This existed as a real gap. The switch below had no branch for any code in
+   * this family, so every one of them fell to `default` and the user was told
+   * "Something went wrong. Try again." — which is unactionable for the person who
+   * has to fix it, and indistinguishable from a random server error. The header
+   * comment claimed the switch was "exhaustive over the codes `firebase/auth`
+   * actually emits", which was not true and is what hid the gap.
+   */
+  | 'AUTH_CONFIG_INVALID'
   | 'AUTH_FAILED';
 
 /**
@@ -208,6 +222,60 @@ function mapAuthError(error: unknown, context: 'sign-in' | 'sign-up' | 'reset'):
         'form',
       );
 
+    /* --- Firebase project configuration ------------------------------------- */
+    // Every code here means the PROJECT is misconfigured, not that the person
+    // typed something wrong. They share one message because the user cannot act
+    // on any of them and the exact code belongs in the console, not the UI.
+    //
+    // `auth/api-key-not-valid` arrives with an HTTP-realm suffix in practice
+    // (`-http`, `-idp`, `-ios`), so each suffix is listed rather than matching a
+    // prefix — a `startsWith` here would also swallow unrelated future codes.
+    case 'auth/invalid-api-key':
+    case 'auth/api-key-not-valid':
+    case 'auth/api-key-not-valid-http':
+    case 'auth/api-key-not-valid-idp':
+    case 'auth/app-not-authorized':
+    case 'auth/project-not-found':
+    case 'auth/auth-domain-not-authorized':
+    case 'auth/configuration-not-found':
+    case 'auth/app-not-initialized':
+      return new AuthError(
+        'AUTH_CONFIG_INVALID',
+        'Sign-in is temporarily unavailable because the application is misconfigured. Please try again shortly.',
+        'form',
+      );
+
+    /* --- Google popup -------------------------------------------------------- */
+    // A person closing the chooser is not an error, so it must not read as one.
+    case 'auth/popup-closed-by-user':
+    case 'auth/cancelled-popup-request':
+      return new AuthError('AUTH_FAILED', 'Google sign-in was cancelled.', 'form');
+
+    case 'auth/popup-blocked':
+      return new AuthError(
+        'AUTH_FAILED',
+        'Your browser blocked the Google sign-in window. Allow pop-ups for this site and try again.',
+        'form',
+      );
+
+    // Not the same as `email-already-in-use`: here the address HAS a password
+    // account already, so telling the person to "sign in" without saying which
+    // method sends them to a password field they may not have.
+    case 'auth/account-exists-with-different-credential':
+      return new AuthError(
+        'AUTH_EMAIL_ALREADY_EXISTS',
+        'That email already has an account. Sign in with your password instead.',
+        'email',
+      );
+
+    case 'auth/quota-exceeded':
+      return new AuthError(
+        'AUTH_TOO_MANY_REQUESTS',
+        'Too many attempts. Wait a minute, then try again.',
+        'form',
+        60,
+      );
+
     default:
       return new AuthError(
         'AUTH_FAILED',
@@ -222,7 +290,45 @@ function mapAuthError(error: unknown, context: 'sign-in' | 'sign-up' | 'reset'):
 /** Re-throw anything that is already one of ours unchanged. */
 function rethrowIfAuthError(error: unknown, context: 'sign-in' | 'sign-up' | 'reset'): never {
   if (error instanceof AuthError) throw error;
+  logAuthFailure(context, error);
   throw mapAuthError(error, context);
+}
+
+/**
+ * Development-only diagnostic. Reports the Firebase `code` and a truncated
+ * `message`, which is what identifies a misconfiguration, and nothing else.
+ *
+ * WHAT IS DELIBERATELY ABSENT, and why each exclusion matters:
+ *   - `email`      PII. The console is often shared and screenshotted.
+ *   - `password`   Never has been available to log; `mapAuthError` only ever
+ *                  receives the SDK's error, never the credential itself.
+ *   - tokens       An ID token is a bearer credential. Printing one turns a log
+ *                  aggregator into a credential store and a screenshot into an
+ *                  account takeover. `error` objects can carry `customData`, and
+ *                  a future SDK could attach more, so the whole object is never
+ *                  logged — only these two extracted fields.
+ *
+ * Production is silent by construction: `NODE_ENV === 'production'` returns
+ * before anything is formatted, so no build can leak this into a deployed log.
+ */
+function logAuthFailure(context: string, error: unknown): void {
+  if (process.env.NODE_ENV === 'production') return;
+
+  const code =
+    typeof error === 'object' && error !== null && 'code' in error
+      ? String((error as { code: unknown }).code)
+      : '(no code — not a Firebase error)';
+
+  const rawMessage =
+    typeof error === 'object' && error !== null && 'message' in error
+      ? String((error as { message: unknown }).message)
+      : String(error);
+
+  // Truncated: an SDK message can embed the input, and the input here is an
+  // email address. 200 chars is enough for any diagnostic use.
+  const message = rawMessage.length > 200 ? `${rawMessage.slice(0, 200)}…` : rawMessage;
+
+  console.warn(`[AUTH ${context}]`, { code, message });
 }
 
 /**
@@ -272,21 +378,40 @@ export async function signUp(input: {
   password: string;
   displayName: string;
 }): Promise<{ user: User; provider: 'password' | 'google' }> {
+  // Split from the profile write so a failure of the second step cannot be
+  // reported as a failure of the first. `createUserWithEmailAndPassword` is the
+  // step that decides whether an account exists; `updateProfile` is cosmetic.
+  //
+  // Previously both shared one `try`, so a network blip during `updateProfile`
+  // surfaced "We could not create your account" for an account that HAD been
+  // created. The person then retried and got `auth/email-already-in-use`, which
+  // is both wrong and unresolvable from the UI — the state they were in was
+  // unrecoverable and they had no way to know it.
+  let credential: UserCredential;
   try {
-    const credential = await createUserWithEmailAndPassword(
+    credential = await createUserWithEmailAndPassword(
       auth(),
       input.email.trim().toLowerCase(),
       input.password,
     );
-
-    // The Auth display name is cosmetic; `users/{uid}.displayName` is the one
-    // the product reads. Set both so the two never disagree.
-    await updateProfile(credential.user, { displayName: input.displayName.trim() });
-
-    return { user: credential.user, provider: 'password' };
   } catch (error) {
     rethrowIfAuthError(error, 'sign-up');
   }
+
+  // The account exists from here on, permanently. Nothing below may report a
+  // creation failure.
+  try {
+    await updateProfile(credential.user, { displayName: input.displayName.trim() });
+  } catch (error) {
+    logAuthFailure('sign-up-profile', error);
+    throw new AuthError(
+      'AUTH_FAILED',
+      'Your account was created, but we could not save your name. Sign in to continue.',
+      'form',
+    );
+  }
+
+  return { user: credential.user, provider: 'password' };
 }
 
 /** Sign in with email and password. */
