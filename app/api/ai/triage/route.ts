@@ -1,51 +1,79 @@
 /**
  * POST /api/ai/triage
  *
- * The Phase 3 ARCHITECTURE PROBE for the Gemini integration. It proves the whole
- * pipeline works end to end without implementing a model call.
+ * Triage a draft the caller is about to submit, BEFORE they submit it.
  *
  * ---------------------------------------------------------------------------
- * WHAT IT PROVES
+ * WHAT IT DOES
  * ---------------------------------------------------------------------------
  * ```
  * POST /api/ai/triage
  *      ↓  withRequest:  rate limit → authenticate → validate
- *      ↓  requireCapability: the role, from the 61-row matrix
+ *      ↓  requireCapability: r01_createIncident — the caller's own draft
  *      ↓  services/ai/triage.ts:  the TriageProvider seam
- *      ↓  services/integrations/gemini:  no key → no client
- *      ↓  502 AI_UNAVAILABLE, with copy that says the report is still fine
+ *      ↓  services/integrations/gemini:  no key → the deterministic fallback
+ *      ↓  200 with `source: 'fallback'`, or 502 AI_UNAVAILABLE with copy that
+ *         says the report is still fine
  * ```
  *
- * That last line is the FR-029 guarantee, demonstrated rather than asserted. A
- * missing Gemini key is a NORMAL state in this deployment and the answer is a
- * typed, non-fatal, honest one — not a crash, not a 500, and above all not a
- * fabricated category and urgency.
+ * This is the PREVIEW half of the feature. The authoritative triage happens
+ * server-side inside `POST /api/incidents` (`services/incidents/create.ts`), so
+ * a citizen who never presses "Analyze" still gets a real, AI-derived category,
+ * urgency, summary and confidence. Nothing here is required for a report to be
+ * submitted or stored, and the two calls are independent on purpose — a preview
+ * must never be able to change what gets persisted.
+ *
+ * ---------------------------------------------------------------------------
+ * A MISSING GEMINI KEY IS A NORMAL STATE, NOT A CRASH
+ * ---------------------------------------------------------------------------
+ * That is the FR-029 guarantee, implemented rather than asserted. With
+ * `GEMINI_API_KEY` unset, `getTriageProvider().isAvailable()` is `false` and the
+ * request is answered by the deterministic keyword engine with
+ * `source: 'fallback'` and `providerAvailable: false` — so the client can tell
+ * the citizen that the assistant is offline and that their report is unaffected.
+ *
+ * It never fabricates a category and presents it as the model's opinion: the
+ * response carries `source`, `providerName` and `outcome` on every path, so a
+ * deterministic classification is always distinguishable from a model's.
  *
  * ---------------------------------------------------------------------------
  * WHY IT IS NOT FAKE FUNCTIONALITY
  * ---------------------------------------------------------------------------
- * It returns no invented data. There is no `if (DEV) return { urgency: 'high' }`
- * branch anywhere in the path (docs/32 MUST 7). A caller with a valid body
- * genuinely reaches the provider boundary and genuinely gets told the provider
- * is not configured. When Phase 4 adds the client, this same request returns a
- * real assessment.
+ * There is no `if (DEV) return { urgency: 'high' }` branch anywhere in the path
+ * (docs/32 MUST 7). A caller with a valid body genuinely reaches the provider
+ * boundary and genuinely gets told when the provider is not configured.
  *
  * ---------------------------------------------------------------------------
- * WHY THE GATE IS A CAPABILITY AND NOT A ROLE
+ * WHY THE GATE IS `r01_createIncident` AND NOT `r13_readAiTriagePanel`
  * ---------------------------------------------------------------------------
- * `r13_readAiTriagePanel` — matrix row 13. Dispatcher and admin have it in full;
- * a responder has it READ-ONLY, meaning they may see an assessment but this
- * endpoint is not the place they obtain one; a citizen is denied outright
- * (docs/22 §3).
+ * This used to gate on `r13_readAiTriagePanel` (matrix row 13), which 403'd
+ * every citizen and every responder — the two roles that actually reach this
+ * screen. That was a real bug with a specific root cause: the endpoint was
+ * ORIGINALLY an architecture probe, and when Phase 4 gave it a real model call
+ * nobody revisited the gate.
  *
- * Two gates run, in the documented order (docs/10 §6.3):
+ * `r13` means "read the AI triage panel ON AN INCIDENT" — it is the
+ * dispatcher-view capability, and it is `readonly` for a responder precisely
+ * because a responder SEES assessments rather than OBTAINING one. This endpoint
+ * reads no incident at all. It takes the caller's own free text (and their own
+ * images) and returns a classification of it, so nothing belonging to another
+ * user is reachable through it.
+ *
+ * `r01_createIncident` is the honest description of the action: "triage the
+ * report I am about to submit as my own". It is `full` for all four roles, so
+ * a citizen can analyse their own draft, and it grants no access to anyone
+ * else's incident — that is gated separately by `assertResourceAccess` on the
+ * incident routes, exactly as before.
+ *
+ * The two gates that DO still apply, in the documented order (docs/10 §6.3):
  *   1. `requireUser` — already done by the wrapper.
  *   2. `requireCapability` — the role, from the matrix.
  *
- * The SCOPE of a `scoped` capability is not evaluated here, because this endpoint
- * has no `:id` and therefore no resource to be opaque about. That is the only
- * case where the resource gate is skipped, and it is stated here rather than left
- * implicit.
+ * The model-call cost is bounded by the `ai.triage` rate limit below, not by the
+ * role: a citizen who spams this spends their own quota and nobody else's.
+ *
+ * `r13` is deliberately left exactly where it was. It still gates reading triage
+ * on the incident detail surface, which is the thing it was written for.
  *
  * ---------------------------------------------------------------------------
  * WHAT A CALLER CANNOT DO
@@ -80,8 +108,9 @@ export const POST = withRequest(
     const { body, user } = ctx;
     if (!user) throw new AppError({ code: 'AUTH_REQUIRED' });
 
-    // Gate: matrix row 13. Throws 403 for a citizen.
-    requireCapability(user, 'r13_readAiTriagePanel', { requestId: ctx.requestId });
+    // Gate: matrix row 1 — see the module header for why this is NOT row 13.
+    // A 403 here would mean the citizen cannot analyse their own draft.
+    requireCapability(user, 'r01_createIncident', { requestId: ctx.requestId });
 
     // -------------------------------------------------------------------------
     // PHASE 4: THE IMAGES ARE VALIDATED BEFORE ANYTHING ELSE

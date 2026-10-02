@@ -130,11 +130,25 @@ function matches(row: Row, filter: Filter): boolean {
 
   // Firestore treats an absent field as null for `==` and `!=`, and excludes it
   // from every ordering comparison.
-  const isNullEq = actual === MISSING ? value === null : actual === null;
-  if (op === '==') return isNullEq;
-  if (op === '!=') return !isNullEq;
+  //
+  // `== null` has to be handled BEFORE the general equality comparison, because
+  // `compare` never returns 0 for a missing field: `compare(MISSING, null)` falls
+  // through to the `String()` branch and compares the sentinel's text against
+  // "null", which is always non-zero. So `where('deletedAt', '==', null)` — the
+  // soft-delete filter on every list in this app — has to short-circuit here.
+  if (op === '==' && value === null) return actual === MISSING || actual === null;
+  if (op === '!=' && value === null) return actual !== MISSING && actual !== null;
 
+  // An absent field is not equal to anything, including null, once the null cases
+  // above have been handled. Returning true for `actual === MISSING` on a non-null
+  // comparison would let a document that simply LACKS the field match a filter for
+  // it, which is the opposite of what Firestore does.
   if (actual === MISSING) return false;
+
+  const eq = compare(actual, value) === 0;
+  if (op === '==') return eq;
+  if (op === '!=') return !eq;
+
   const cmp = compare(actual, value);
   if (op === '<') return cmp < 0;
   if (op === '<=') return cmp <= 0;

@@ -85,6 +85,7 @@ import {
   clientIp,
   enforceRateLimit,
   hashIp,
+  rateLimitFor,
   rateLimitResponseHeaders,
   type RateLimitResult,
 } from '@/lib/server/rate-limit';
@@ -358,7 +359,14 @@ async function applyRateLimit(
 
   const authed = bearerUid(request);
   const hashed = resolveIpHash(request);
-  const subjectValue = authed ?? hashed ?? `route:${routeKey}`;
+  // Honour the rule's declared subject. A route that says `ip` must be limited
+  // per address even when a token is present, otherwise one caller behind a
+  // shared egress can spend another user's bucket. The `route:` fallback only
+  // applies when neither identifier is resolvable at all.
+  const subjectValue =
+    rateLimitFor(routeKey).subject === 'ip'
+      ? (hashed ?? authed ?? `route:${routeKey}`)
+      : (authed ?? hashed ?? `route:${routeKey}`);
 
   const result = await enforceRateLimit({ routeKey, subjectValue });
   log.debug({ path: routeKey, status: 200 });
@@ -379,13 +387,20 @@ function bearerUid(request: Request): string | null {
   if (!header || !header.startsWith('Bearer ')) return null;
   const token = header.slice('Bearer '.length).trim();
   if (token === '') return null;
-  // The uid is the FIRST segment of a JWT. Reading it unverified is safe HERE
-  // and only here: it selects a bucket, and `requireUser` still does the real
-  // verification before the handler runs.
-  const firstSegment = token.split('.')[0];
-  if (firstSegment === undefined) return null;
+  // A JWT is `header.payload.signature`, so the claims — and therefore `sub`,
+  // which is the uid on a Firebase ID token — are in the SECOND segment. Reading
+  // index 0 parsed the base64url of the HEADER, which has no `sub`, so this
+  // helper returned null for EVERY real token. Every uid-keyed rate limit then
+  // silently fell through to the per-IP bucket: ten signups from one address
+  // (a hackathon hall, a university NAT, a corporate proxy) exhausted
+  // `me.bootstrap` for everybody behind it, and no new user could ever create a
+  // profile. `sub` stays unverified, which is fine HERE and only here: it picks
+  // a bucket, and `requireUser` performs the real verification before the
+  // handler runs.
+  const payloadSegment = token.split('.')[1];
+  if (payloadSegment === undefined) return null;
   try {
-    const payload = JSON.parse(Buffer.from(firstSegment, 'base64url').toString('utf8')) as {
+    const payload = JSON.parse(Buffer.from(payloadSegment, 'base64url').toString('utf8')) as {
       sub?: unknown;
     };
     return typeof payload.sub === 'string' && payload.sub !== '' ? payload.sub : null;

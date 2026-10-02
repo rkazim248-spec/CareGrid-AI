@@ -2,11 +2,14 @@
 
 import Link from 'next/link';
 import { MapPin } from 'lucide-react';
+import type { z } from 'zod';
 
 import { Card, CardContent } from '@/components/ui';
 import { RelativeTime, StatusBadge, UrgencyBadge } from '@/components/domain';
 import { CATEGORY_META } from '@/config';
-import type { Incident } from '@/types';
+import type { incidentListResponseSchema } from '@/validators/incident';
+
+type IncidentRow = z.infer<typeof incidentListResponseSchema>['items'][number];
 
 /**
  * One row in "My reports" — docs/04 §13.8 mobile card list.
@@ -16,15 +19,14 @@ import type { Incident } from '@/types';
  * responsive rule). The whole card is the link, so there is one tab stop and
  * one accessible name rather than a link nested inside a row.
  */
-export function MyReportCard({ incident }: { incident: Incident }) {
-  const category = CATEGORY_META[incident.category];
-  const CategoryIcon = category.icon;
-  const placeName = incident.location?.placeName ?? null;
+export function MyReportCard({ incident }: { incident: IncidentRow }) {
+  const category = incident.category ? CATEGORY_META[incident.category].label : 'Not classified';
+  const placeName = incident.placeName;
 
   return (
     <li>
       <Link
-        href={`/track?ref=${incident.reference}`}
+        href={`/incidents/${incident.incidentId}`}
         className="block rounded-card focus-visible:ring-[2px] focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-app focus-visible:outline-none"
       >
         <Card className="transition-colors hover:border-strong">
@@ -38,10 +40,7 @@ export function MyReportCard({ incident }: { incident: Incident }) {
             <p className="clamp-2 max-w-[72ch] text-sm text-primary">{incident.summary}</p>
 
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-secondary">
-              <span className="inline-flex items-center gap-1.5">
-                <CategoryIcon className="size-3.5" aria-hidden="true" />
-                {category.label}
-              </span>
+              <span>{category}</span>
               {placeName ? (
                 <span className="inline-flex min-w-0 items-center gap-1.5">
                   <MapPin className="size-3.5 shrink-0" aria-hidden="true" />
@@ -50,7 +49,7 @@ export function MyReportCard({ incident }: { incident: Incident }) {
               ) : (
                 <span className="text-muted">No location on this report</span>
               )}
-              <RelativeTime iso={incident.createdAt} />
+              {incident.createdAt ? <RelativeTime iso={incident.createdAt.toISOString()} /> : null}
             </div>
           </CardContent>
         </Card>

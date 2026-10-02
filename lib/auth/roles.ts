@@ -13,16 +13,13 @@
  * ---------------------------------------------------------------------------
  * docs/22 §9:
  *
- *   citizen    → `/report`     (the product's primary act, not a dashboard)
+ *   citizen    → `/dashboard` (their account and saved reports)
  *   responder  → `/dashboard`  (their assignments)
  *   dispatcher → `/dashboard`  (the operations console)
  *   admin      → `/admin`      (the trust surface)
  *
- * A citizen has no dashboard in this product. Sending them to a blank
- * operations console would be sending them somewhere they have no permission to
- * do anything in, and every citizen would land on a 403. That asymmetry is
- * deliberate and is the single most common source of "why is my login broken"
- * reports in an app with four very different roles.
+ * A citizen has a personal dashboard, not an operations console. Its incident
+ * list is still scoped by the server.
  */
 
 import { can, type CapabilityKey } from '@/lib/auth/permissions';
@@ -41,7 +38,7 @@ export type { UserRole };
  * ERROR here rather than an `undefined` at runtime that navigates to `/`.
  */
 export const ROLE_LANDING: Readonly<Record<UserRole, string>> = {
-  citizen: '/report',
+  citizen: '/dashboard',
   responder: '/dashboard',
   dispatcher: '/dashboard',
   admin: '/admin',
@@ -49,12 +46,12 @@ export const ROLE_LANDING: Readonly<Record<UserRole, string>> = {
 
 /**
  * The capability that justifies each landing route. Asserted in
- * `tests/unit/permissions.test.ts`: a citizen landing on `/report` must be able
- * to create an incident, and a dispatcher landing on `/dashboard` must be able
- * to read all incidents. If either assertion fails, the landing route is wrong.
+ * `tests/unit/permissions.test.ts`: a citizen landing on `/dashboard` must be
+ * able to read their own reports, and a dispatcher landing there must be able
+ * to read all incidents.
  */
 export const LANDING_REQUIRES: Readonly<Record<UserRole, CapabilityKey>> = {
-  citizen: 'r01_createIncident',
+  citizen: 'r05_readOwnIncidents',
   responder: 'r05_readOwnIncidents',
   dispatcher: 'r08_readAllIncidents',
   admin: 'r52_listUsers',

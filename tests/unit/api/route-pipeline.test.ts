@@ -275,13 +275,25 @@ describe('every privileged route names a MATRIX ROW, not a hand-written role lis
     },
     {
       file: 'app/api/ai/triage/route.ts',
-      capability: 'r13_readAiTriagePanel',
-      denied: 'citizen',
+      // Row 1, NOT row 13.
+      //
+      // This was `r13_readAiTriagePanel` with `denied: 'citizen'`, and that
+      // encoded the bug this test now guards against: the endpoint analyses the
+      // CALLER'S OWN DRAFT on the way to `POST /api/incidents`, so gating it on a
+      // read capability a citizen does not hold 403'd the exact user it exists to
+      // serve. `r01_createIncident` is the row that describes "a citizen acting on
+      // their own report", and it is the same row the create route uses — so the
+      // preview can never be MORE restricted than the submit it precedes.
+      //
+      // `denied` stays empty: every authenticated role can create an incident, so
+      // there is no role this route should refuse.
+      capability: 'r01_createIncident',
+      denied: '',
     },
   ];
 
   for (const { file, capability, denied } of ROUTES) {
-    it(`${file} gates on ${capability}, which ${denied} does not hold`, () => {
+    it(`${file} gates on ${capability}${denied === '' ? ', which no role is denied' : `, which ${denied} does not hold`}`, () => {
       const code = codeOf(...file.split('/'));
 
       // A capability name is a COMPILE error if the row is removed. An array
@@ -290,10 +302,28 @@ describe('every privileged route names a MATRIX ROW, not a hand-written role lis
       expect(code).not.toMatch(/requireRole\(user,\s*\[/);
       expect(code).not.toMatch(/user\.role\s*===\s*['"]admin['"]/);
 
-      // The capability really is denied to that role in the matrix.
-      expect(PERMISSION_MATRIX[capability as keyof typeof PERMISSION_MATRIX][denied as 'citizen']).toBe(
-        'denied',
-      );
+      // `denied` names the role that must NOT hold the capability, and it is
+      // OPTIONAL. A route every authenticated role may use has nothing to assert
+      // there, and forcing an empty string through a `PERMISSION_MATRIX[cap][role]`
+      // lookup would index a key that does not exist and produce a failure that
+      // reads like a permissions bug rather than a test-shape bug.
+      if (denied !== '') {
+        expect(PERMISSION_MATRIX[capability as keyof typeof PERMISSION_MATRIX][denied as 'citizen']).toBe(
+          'denied',
+        );
+      } else {
+        // The stronger claim when nothing is refused: EVERY role holds it.
+        //
+        // Asserting "not denied" for one role would still permit a row that
+        // excludes somebody else — and for `r01_createIncident` that would mean a
+        // responder could not file an incident, which is exactly the regression this
+        // row was changed to prevent.
+        const row = PERMISSION_MATRIX[capability as keyof typeof PERMISSION_MATRIX];
+        const refused = Object.entries(row)
+          .filter(([, level]) => level === 'denied')
+          .map(([role]) => role);
+        expect(refused, `${capability} must not refuse any authenticated role`).toEqual([]);
+      }
     });
   }
 

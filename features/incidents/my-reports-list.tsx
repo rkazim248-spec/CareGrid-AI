@@ -1,70 +1,85 @@
 'use client';
 
 import * as React from 'react';
-import { useRouter } from 'next/navigation';
 import { ClipboardList } from 'lucide-react';
 
-import { Alert, AlertDescription, AlertIcon, AlertTitle } from '@/components/ui';
-import { DemoDataBadge, EMPTY_COPY, EmptyState } from '@/components/feedback';
-import { MOCK_INCIDENTS } from '@/lib/mock-data';
+import { ErrorState, EMPTY_COPY, EmptyState } from '@/components/feedback';
+import { Button } from '@/components/ui';
+import { listIncidents } from '@/lib/api/client';
 import { MyReportCard } from '@/features/incidents/my-report-card';
 import { MyReportsFilters } from '@/features/incidents/my-reports-filters';
-import type { Incident, IncidentStatus } from '@/types';
+import type { IncidentStatus } from '@/types';
+import type { z } from 'zod';
+import type { incidentListResponseSchema } from '@/validators/incident';
 
-/**
- * /incidents for a citizen: "My reports" — docs/04 §13.8, §12.1.
- *
- * A card list, never a table on mobile. The dispatcher archive view (the other
- * half of §13.8) is a different component and is out of scope here.
- *
- * OWNERSHIP NOTE. `Incident` in `types/domain.ts` carries no reporter field by
- * design (data minimisation, docs/04 §1.2 P9), and the Phase 1 session is a
- * mock. So this list renders the demonstration dataset and says so in visible
- * text rather than implying it has been scoped to one account. From Phase 3 the
- * scoping is `GET /api/incidents` with server-side role scoping
- * (docs/08 §3.2) and this component changes no props.
- */
-const SAMPLE = MOCK_INCIDENTS.filter((incident) => !incident.deletedAt);
-
-function matches(incident: Incident, needle: string, status: IncidentStatus | null): boolean {
-  if (status && incident.status !== status) return false;
-  if (!needle) return true;
-  const haystack = [
-    incident.reference,
-    incident.summary,
-    incident.location?.placeName ?? '',
-  ]
-    .join(' ')
-    .toLowerCase();
-  return haystack.includes(needle.toLowerCase());
-}
+type IncidentRow = z.infer<typeof incidentListResponseSchema>['items'][number];
 
 export function MyReportsList() {
-  const router = useRouter();
+  const [items, setItems] = React.useState<readonly IncidentRow[]>([]);
+  const [hasMore, setHasMore] = React.useState(false);
+  const [nextCursor, setNextCursor] = React.useState<string | null>(null);
   const [query, setQuery] = React.useState('');
   const [status, setStatus] = React.useState<IncidentStatus | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [loadingMore, setLoadingMore] = React.useState(false);
+  const [error, setError] = React.useState(false);
+  const [moreError, setMoreError] = React.useState(false);
+  const [reload, setReload] = React.useState(0);
 
-  const visible = React.useMemo(
-    () => SAMPLE.filter((incident) => matches(incident, query.trim(), status)),
-    [query, status],
-  );
+  React.useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError(false);
+
+    void listIncidents({ limit: '100' }, { signal: controller.signal })
+      .then((result) => {
+        setItems(result.items);
+        setHasMore(result.page.hasMore);
+        setNextCursor(result.page.nextCursor);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setError(true);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [reload]);
+
+  const loadMore = React.useCallback(async () => {
+    if (nextCursor === null || loadingMore) return;
+    setLoadingMore(true);
+    setMoreError(false);
+    try {
+      const result = await listIncidents({ limit: '100', cursor: nextCursor });
+      setItems((current) => {
+        const seen = new Set(current.map((item) => item.incidentId));
+        return [...current, ...result.items.filter((item) => !seen.has(item.incidentId))];
+      });
+      setHasMore(result.page.hasMore);
+      setNextCursor(result.page.nextCursor);
+    } catch {
+      setMoreError(true);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, nextCursor]);
+
+  const visible = React.useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return items.filter((incident) => {
+      if (status && incident.status !== status) return false;
+      if (!needle) return true;
+      return [incident.reference, incident.summary, incident.placeName ?? '']
+        .join(' ')
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [items, query, status]);
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="flex flex-col gap-2">
-        <DemoDataBadge />
-        <Alert tone="neutral">
-          <AlertIcon tone="neutral" />
-          <div className="flex min-w-0 flex-col gap-1">
-            <AlertTitle>Sample data</AlertTitle>
-            <AlertDescription>
-              These are the demonstration records, not your reports. A real build returns only
-              reports you filed, scoped by the server.
-            </AlertDescription>
-          </div>
-        </Alert>
-      </div>
-
       <MyReportsFilters
         query={query}
         onQueryChange={setQuery}
@@ -72,29 +87,57 @@ export function MyReportsList() {
         onStatusChange={setStatus}
       />
 
-      {visible.length === 0 ? (
+      {loading ? (
+        <ul className="flex flex-col gap-3" aria-label="Loading reports">
+          {[0, 1, 2].map((item) => (
+            <li key={item} className="skeleton-fill h-28 rounded-card" />
+          ))}
+        </ul>
+      ) : error ? (
+        <ErrorState
+          title="We could not load your reports"
+          description="Your reports have not been changed. Check your connection and try again."
+          onRetry={() => setReload((value) => value + 1)}
+        />
+      ) : visible.length === 0 ? (
         <EmptyState
           icon={ClipboardList}
-          title={EMPTY_COPY.reports.title}
-          description={EMPTY_COPY.reports.description}
-          action={{
-            label: EMPTY_COPY.reports.actionLabel,
-            onClick: () => {
-              router.push('/report');
-            },
-          }}
-          footnote="Clearing the search or the status filter brings the sample records back."
+          title={items.length === 0 ? EMPTY_COPY.reports.title : 'No reports match these filters'}
+          description={
+            items.length === 0
+              ? EMPTY_COPY.reports.description
+              : 'Clear the search or choose a different status to see your reports.'
+          }
+          action={
+            items.length === 0
+              ? { label: EMPTY_COPY.reports.actionLabel, href: '/report' }
+              : { label: 'Clear filters', onClick: () => { setQuery(''); setStatus(null); } }
+          }
         />
       ) : (
         <>
-          <p className="text-xs text-secondary tabular">
-            Showing {visible.length} of {SAMPLE.length} sample reports.
+          <p className="text-xs text-secondary tabular-nums">
+            {visible.length} {visible.length === 1 ? 'report' : 'reports'}
+            {hasMore ? ' shown; more reports are available.' : ''}
           </p>
           <ul className="flex flex-col gap-3">
             {visible.map((incident) => (
               <MyReportCard key={incident.incidentId} incident={incident} />
             ))}
           </ul>
+          {hasMore ? (
+            <Button variant="outline" className="self-start" loading={loadingMore} onClick={() => void loadMore()}>
+              Load more reports
+            </Button>
+          ) : null}
+          {moreError ? (
+            <p role="alert" className="text-sm text-danger-fg-muted">
+              We could not load the next page. Your loaded reports are still available.
+              <button type="button" className="ml-1 underline underline-offset-2" onClick={() => void loadMore()}>
+                Try again
+              </button>
+            </p>
+          ) : null}
         </>
       )}
     </div>

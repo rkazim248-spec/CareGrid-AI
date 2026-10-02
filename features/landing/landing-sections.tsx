@@ -51,7 +51,7 @@ export function DemoDisclaimer() {
       <Alert tone="neutral">
         <AlertIcon tone="neutral" />
         <div className="flex min-w-0 flex-col gap-1">
-          <AlertTitle>This is a demonstration system</AlertTitle>
+          <AlertTitle>Contact emergency services first</AlertTitle>
           <AlertDescription>{DEMO_DISCLAIMER_LONG}</AlertDescription>
         </div>
       </Alert>

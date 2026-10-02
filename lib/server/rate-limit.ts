@@ -141,6 +141,38 @@ export const RATE_LIMIT_RULES: Readonly<Record<string, RateLimitRule>> = {
   'admin.systemHealth': { routeKey: 'admin.systemHealth', limit: 30, windowSec: 60, subject: 'uid' },
   'ai.triage': { routeKey: 'ai.triage', limit: 20, windowSec: 3600, subject: 'uid' },
 
+  /* --- Phase 4: incident creation (docs/08 §3.1, FR-015) ----------------- */
+  /**
+   * 5/h per uid — FR-015. This is the one budget where the tightest cap in the
+   * app is correct: `incidents.create` is the only endpoint that reaches AI
+   * triage on the citizen path, and it also writes an incident, a report and a
+   * status-history event.
+   *
+   * It is capped per uid and NOT per IP, because a shared address is the normal
+   * case for the people this route exists for: a university campus, a company
+   * office, a hackathon hall. A per-IP cap here would let one busy building lock
+   * every citizen in it out of reporting an emergency, which is the failure mode
+   * `docs/16` forbids. A determined spammer who can create accounts gets 5
+   * incidents per account, which is what `POST /api/auth/*` and the account
+   * review queue are for.
+   */
+  'incidents.create': { routeKey: 'incidents.create', limit: 5, windowSec: 3600, subject: 'uid' },
+
+  /**
+   * 120/min per uid for the READ side of the same collection.
+   *
+   * A separate budget from `incidents.create`, deliberately, in both directions:
+   * tracking a report must never be throttled by the limit that exists to stop
+   * someone spamming reports, and a user paging through their own history must not
+   * consume a budget whose whole purpose is protecting the AI quota.
+   *
+   * 120/min is generous for a human clicking through pages and low enough that the
+   * endpoint cannot be used to enumerate documents — though enumeration is already
+   * prevented by the scope predicate being part of the query, so this is a
+   * cost-control limit rather than a security boundary.
+   */
+  'incidents.read': { routeKey: 'incidents.read', limit: 120, windowSec: 60, subject: 'uid' },
+
   /* --- Phase 5: uploads (docs/15 §8.1) ---------------------------------- */
   /**
    * 30/h per uid. A full report needs 3 signs (3 media) and the FR-015 budget is

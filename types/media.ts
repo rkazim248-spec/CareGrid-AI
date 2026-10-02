@@ -200,6 +200,26 @@ export type PendingUpload = {
   readonly kind: MediaKind;
   /** Present once `status === 'uploaded'`. */
   readonly mediaId?: string;
+  /**
+   * The STAGING path the server minted at sign time: `staging/{uid}/med_….ext`.
+   *
+   * Present from the moment the sign call returns, so it survives a failed PUT and
+   * a retry.
+   *
+   * This is the field that makes evidence attachable at all. `POST
+   * /api/uploads/finalize` verifies bytes but cannot attach them, because
+   * `finalPathFor(uid → incidentId, reportId, mediaId)` only exists once an
+   * incident and a report id do. The submit path therefore sends these staging
+   * paths to `POST /api/incidents`, and `attachEvidenceToIncident` does the move
+   * once those ids exist.
+   *
+   * It is deliberately **not** persisted into any Firestore document — a staging
+   * path is a transient locator, not evidence — and it is never rendered. The
+   * server re-validates the shape (`STAGING_PATH_RE`) and re-checks the uid
+   * segment against the caller before it touches anything, so a doctored value
+   * here is rejected rather than trusted.
+   */
+  readonly storagePath?: string;
   readonly verifiedContentType?: AllowedMediaType;
   readonly sha256?: string;
   readonly width?: number | null;

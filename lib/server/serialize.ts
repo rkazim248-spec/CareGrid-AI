@@ -63,8 +63,9 @@ import type { UserRole } from '@/types/enums';
  * | `privileged`| dispatcher/admin on a LIST row        | the original text, search tokens       |
  * | `responder` | an assigned responder                 | reporter identity, precise location text |
  * | `owner`     | a citizen on their own record         | the same as `full`; named for intent   |
+ * | `none`      | nobody — the DEFAULT for anyone else  | everything                             |
  */
-export type RedactionProfile = 'full' | 'privileged' | 'responder' | 'owner';
+export type RedactionProfile = 'full' | 'privileged' | 'responder' | 'owner' | 'none';
 
 /**
  * The profile for a caller on a given record.
@@ -81,6 +82,24 @@ export type RedactionProfile = 'full' | 'privileged' | 'responder' | 'owner';
  *   2. **Ownership beats role.** A citizen reading their OWN report gets
  *      `owner`, which includes the original text, even though a citizen
  *      reading someone else's gets nothing at all. docs/22 §3 row 9.
+ *
+ * ---------------------------------------------------------------------------
+ * THE DEFAULT IS `none`, AND THAT IS THE WHOLE POINT OF THIS FUNCTION
+ * ---------------------------------------------------------------------------
+ * The fall-through returns `none` — NOT `full`. A caller that reaches here with a
+ * viewer who is neither the owner, nor ops, nor an assigned responder has no
+ * established right to the record, and the least-privileged answer is the correct
+ * one.
+ *
+ * Returning `full` as the default would have been a silent, total disclosure bug:
+ * one missing `assigned` argument, one new role added above this function, or one
+ * early return refactored away, and every such caller starts receiving the
+ * citizen's original words and identity. Nothing in the type system would complain
+ * — `full` is a valid profile. The leak would be found by a user, not by a build.
+ *
+ * In practice the resource gate refuses these reads with a 404 before this is
+ * called, so `none` should be unreachable in normal operation. It exists so that a
+ * bug in THAT gate degrades into a redacted row instead of a disclosed one.
  */
 export function redactionProfile(input: {
   readonly viewer: { readonly uid: string; readonly role: UserRole };
@@ -95,7 +114,7 @@ export function redactionProfile(input: {
   }
   if (viewer.role === 'dispatcher' || viewer.role === 'admin') return 'full';
   if (viewer.role === 'responder' && input.assigned === true) return 'responder';
-  return 'full';
+  return 'none';
 }
 
 /** Does this profile allow the citizen's original words to be read? */

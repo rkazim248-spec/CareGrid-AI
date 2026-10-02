@@ -88,14 +88,20 @@ function getAdminServices(): AdminServices {
   const existing = cache[CACHE_KEY];
   if (existing) return existing;
 
-  const env = getServerEnv();
+const env = getServerEnv();
 
-  const app: App =
-    getApps().length > 0 ? getApp() : initializeApp({ credential: cert({
+const app: App =
+  getApps().length > 0 ? getApp() : initializeApp({
+    credential: cert({
       projectId: env.projectId,
       clientEmail: env.clientEmail,
       privateKey: env.privateKey,
-    }) });
+    }),
+    // Without this the App carries no bucket, and `getStorage(app).bucket()`
+    // throws `storage/invalid-argument` at the first real call. Pass it only
+    // when we actually have one: an empty string is worse than no key at all.
+    ...(env.storageBucket ? { storageBucket: env.storageBucket } : {}),
+  });
 
   const services: AdminServices = {
     app,

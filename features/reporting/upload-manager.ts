@@ -237,6 +237,96 @@ export function uploadSnapshot(): PendingUpload[] {
   return [...store.values()];
 }
 
+/* ========================================================================== */
+/* Gathering attachable media for the submit               */
+/* ========================================================================== */
+
+/** One item ready to be referenced in `POST /api/incidents` as `media[]`. */
+export type AttachableMedia = {
+  readonly storagePath: string;
+  readonly displayName: string;
+};
+
+/** What the form needs to know before it sends the report. */
+export type AttachableMediaSummary = {
+  /** Ready to attach. Send these as `media[]`. */
+  readonly attachable: readonly AttachableMedia[];
+  /** Still uploading or being verified. Cannot be attached yet. */
+  readonly inFlight: readonly PendingUpload[];
+  /** Failed. Their bytes exist nowhere usable; the user must re-add them. */
+  readonly failed: readonly PendingUpload[];
+};
+
+/**
+ * Partition the store into what can be attached and what cannot.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS RATHER THAN BEING INLINED IN THE FORM
+ * ---------------------------------------------------------------------------
+ * Because the rule "only a `uploaded` item with a `storagePath` is attachable" has
+ * to be applied in exactly one place. Inlined in the form it would be a
+ * `filter(...)` that someone later widens to "anything not failed" and thereby
+ * ships an incident pointing at an object that was never uploaded.
+ *
+ * The predicate is therefore: `status === 'uploaded'` AND `storagePath` present.
+ * Both halves are required.
+ *
+ *  - `status === 'uploaded'` alone would include an item whose PUT or finalize
+ *    failed but which still carries the path from the sign step — the server would
+ *    find nothing at that path and drop it, wasting the round trip and confusing
+ *    the reporter.
+ *  - `storagePath` present alone would include every signed item, including the
+ *    ones mid-PUT right now.
+ *
+ * ---------------------------------------------------------------------------
+ * `inFlight` IS RETURNED SO THE FORM CAN ASK, NOT JUST DROP
+ * ---------------------------------------------------------------------------
+ * A report whose photo is at 80% is still submittable, and silently discarding the
+ * photo would be the worst outcome available: the citizen believes they sent a
+ * photo and a dispatcher sees a text-only report. `report-form.tsx` uses this to
+ * block submit on a still-uploading file rather than quietly omitting it.
+ */
+/**
+ * Partition a set of uploads into what can be attached and what cannot.
+ *
+ * ---------------------------------------------------------------------------
+ * WHY THIS IS A PURE FUNCTION AND `collectAttachableMedia` IS A THIN WRAPPER
+ * ---------------------------------------------------------------------------
+ * Because the store is module-level and its only writer is `startUpload`, which
+ * needs `XMLHttpRequest` and a browser. The unit environment is `node` by design,
+ * so a test that wanted to cover this partition through the store would have to
+ * re-implement the store — and a hand-built store that passes while the real one is
+ * broken is worse than no test, because it reads as coverage.
+ *
+ * Taking the items as an argument makes the rule testable on its own terms, and
+ * keeps `collectAttachableMedia` as the one place that knows where the items come
+ * from. There is still exactly one implementation of the predicate.
+ */
+export function partitionUploads(items: readonly PendingUpload[]): AttachableMediaSummary {
+  const attachable: AttachableMedia[] = [];
+  const inFlight: PendingUpload[] = [];
+  const failed: PendingUpload[] = [];
+
+  for (const item of items) {
+    if (item.status === 'failed') {
+      failed.push(item);
+      continue;
+    }
+    if (item.status !== 'uploaded' || item.storagePath === undefined) {
+      inFlight.push(item);
+      continue;
+    }
+    attachable.push({ storagePath: item.storagePath, displayName: item.fileName });
+  }
+
+  return { attachable, inFlight, failed };
+}
+
+/** Read the live store and partition it. See `partitionUploads`. */
+export function collectAttachableMedia(): AttachableMediaSummary {
+  return partitionUploads(uploadSnapshot());
+}
+
 /** A local id that cannot collide with a previous session's. */
 let localCounter = 0;
 function nextLocalId(): string {
@@ -373,6 +463,15 @@ export async function startUpload(
       displayName,
       intent: 'report',
     });
+
+    // Captured HERE, at the sign step, rather than at `uploaded`.
+    //
+    // That ordering is the whole point. `finalize` returns a `mediaId` but no path,
+    // so reading it from there would mean the only opportunity to keep the staging
+    // locator has already passed. Setting it now means it is present even if the
+    // PUT or the finalize fails and the user retries — a retry re-signs, but an
+    // item that reached `uploaded` always has the path that will be attached.
+    advance(localId, 'signing', { storagePath: signed.storagePath });
 
     // --- 3. the PUT, with real progress --------------------------------
     advance(localId, 'uploading');

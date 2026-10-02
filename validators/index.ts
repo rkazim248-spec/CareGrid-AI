@@ -147,3 +147,16 @@ export {
   type ReviewDecision,
   type ReviewDispatchOutcome,
 } from '@/validators/admin';
+
+/* --- incident creation: docs/08 §3.1, FR-001 … FR-003 --------------------- */
+export {
+  incidentCreateBodySchema,
+  incidentCreateResponseSchema,
+  incidentLocationSchema,
+  incidentListQuerySchema,
+  incidentListResponseSchema,
+  incidentRowSchema,
+  incidentDetailResponseSchema,
+  type IncidentCreateBody,
+  type IncidentCreateResponse,
+} from '@/validators/incident';

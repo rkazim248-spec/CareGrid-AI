@@ -65,10 +65,10 @@ export const STORAGE_KEYS = {
   reportDraft: 'cg.draft.report',
 } as const;
 
-/** The public demo disclaimer. Rendered on every public surface. */
+/** Safety notice used on public surfaces. */
 export const DEMO_DISCLAIMER =
-  'This is a demonstration system. It is not a replacement for a public emergency number.';
+  'CareGrid AI does not contact emergency services. Call your local emergency number for urgent help.';
 
-/** Shown on the landing hero and in the auth footer. */
+/** Expanded safety notice shown on the landing page. */
 export const DEMO_DISCLAIMER_LONG =
-  'CareGrid AI is a demonstration project. It is not a certified emergency dispatch system, it has no service-level guarantee, and it must not be used in place of a public emergency number.';
+  'CareGrid AI helps organize incident reports but does not contact emergency services or replace emergency response. Call your local emergency number first when urgent help is needed.';

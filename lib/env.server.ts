@@ -165,6 +165,27 @@ export function getServerEnv() {
      * (Firebase's own admin SDK init docs).
      */
     privateKey: required('FIREBASE_PRIVATE_KEY', where).replace(/\\n/g, '\n'),
+    /**
+     * The Cloud Storage bucket that holds evidence.
+     *
+     * This has to be explicit. `initializeApp({ credential: cert(...) })` sets no
+     * `storageBucket`, and `getStorage(app)` then defers the failure to
+     * `.bucket()`, which throws `storage/invalid-argument: Bucket name not
+     * specified`. `isStorageConfigured()` caught that and reported the bucket as
+     * unusable, so every signed-upload request answered 503 and the citizen saw
+     * "Photos and voice notes cannot be uploaded right now" even though
+     * Firestore and Auth — which use the SAME service account — were working
+     * perfectly. The account was never the problem; the app simply did not know
+     * which bucket to talk to.
+     *
+     * Read from the server-only name first, then the public one. The public
+     * value is safe to expose (it is a bucket NAME, not a credential) and it is
+     * what the client already reads, so a deployment that only has that one
+     * still works.
+     */
+    storageBucket:
+      optionalString('FIREBASE_STORAGE_BUCKET') ||
+      optionalString('NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET'),
     isProduction: process.env.NODE_ENV === 'production',
     appUrl: required('NEXT_PUBLIC_APP_URL', 'Used for the CSRF origin set.'),
     /** docs/10 §3.6. A privileged action needs a token issued within this window. */
@@ -520,6 +541,60 @@ export function mapboxStatus(): IntegrationStatus {
 
 export function isMapboxConfigured(): boolean {
   return mapboxStatus().configured;
+}
+
+/**
+ * The token used for SERVER-SIDE GEOCODING.
+ *
+ * ---------------------------------------------------------------------------
+ * THIS REUSES THE PUBLIC TOKEN, AND THAT IS A DELIBERATE, ACCEPTED TRADEOFF
+ * ---------------------------------------------------------------------------
+ * The textbook answer is a second, secret, server-only token: the public token is
+ * inlined by Next at build time and anyone can lift it from the JavaScript, and
+ * geocoding is metered per request, so a public geocoding token is a bill anyone on
+ * the internet can inflate.
+ *
+ * This deployment does not do that, because the project decided against adding a
+ * second geocoding credential. So `NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN` is read here,
+ * on the server, and used for the forward-geocode request.
+ *
+ * WHAT THAT COSTS, stated plainly so nobody is surprised:
+ *  - Anyone who opens the app can read the token out of the bundle.
+ *  - They can therefore call Mapbox's geocoder with it, and the bill lands here.
+ *  - `.env.example` says "NEVER put a Mapbox secret/server token in NEXT_PUBLIC_" —
+ *    that is still true, and still why a public token is the *only* thing in
+ *    `NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN`. We are not exposing a secret; we are
+ *    deliberately spending a public one on a metered endpoint.
+ *
+ * THE MITIGATION, and it is not optional: the token MUST be restricted in the
+ * Mapbox dashboard by URL so it only answers requests from this deployment's origin.
+ * That caps the blast radius to our own traffic rather than the open internet. It
+ * does not make the risk zero — a referrer restriction is defeatable by anyone who
+ * spoofs a header — it makes it a cost that tracks our real traffic.
+ *
+ * IF THIS EVER MATTERS: switching to a secret token is a one-line change here plus
+ * one new variable. `geocodeAddress` already treats an absent token as
+ * `provider_unavailable`, which degrades an address-only report into a report with
+ * a stated warning rather than losing it, so that migration is safe to make later.
+ */
+export function geocodingToken(): string | null {
+  // `|| null`, not the raw result: `optionalString` returns its fallback — an empty
+  // string — for an absent variable, and `'' !== null` reads as "configured". That
+  // turned an unset token into a live geocoding path that failed at request time
+  // instead of degrading, which is exactly the outcome this function exists to avoid.
+  return optionalString('NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN') || null;
+}
+
+/**
+ * The language geocoding results are returned in. docs/12 §5 — the app's UI language.
+ *
+ * There is no dedicated geocoding-language variable: this deployment adds no
+ * geocoding-specific configuration. The app's own locale is the right answer anyway,
+ * since a citizen typing an address is typing it in the language they are reading
+ * the form in.
+ */
+export function geocodingLanguage(): string {
+  return optionalString('NEXT_PUBLIC_DEFAULT_LOCALE') || 'en';
 }
 
 /**

@@ -8,8 +8,6 @@ import { TopBar, ConnectivityBanner } from '@/components/layout/top-bar';
 import { BottomNav } from '@/components/layout/bottom-nav';
 import { useResolvedSession } from '@/components/providers/session-provider';
 import { ForbiddenState } from '@/components/feedback/forbidden-state';
-import { DemoDataBadge } from '@/components/feedback/live-region';
-import { DEMO_DISCLAIMER } from '@/lib/constants';
 import type { UserRole } from '@/types/enums';
 
 /**
@@ -77,32 +75,6 @@ export function AppShell({
       </div>
 
       <BottomNav />
-
-      <Phase1Banner />
-    </div>
-  );
-}
-
-/**
- * A permanent marker that this build is a Phase 2 authentication shell over
- * Phase 1 sample data.
- *
- * It is deliberately visible. A reviewer or a judge should never be able to
- * mistake this for a working incident-routing system: authentication is real
- * once Firebase is configured, but incidents, maps, and analytics are still
- * typed sample data, and a screen that looks finished is the thing most likely to
- * be misread (docs/04 §15.5).
- */
-function Phase1Banner() {
-  return (
-    <div
-      data-print-hidden
-      className="flex flex-wrap items-center gap-2 border-t border-subtle bg-app px-4 py-2 text-2xs text-muted lg:px-8"
-    >
-      <DemoDataBadge />
-      <span>
-        Authentication is live. Incidents, maps, and analytics are sample data. {DEMO_DISCLAIMER}
-      </span>
     </div>
   );
 }

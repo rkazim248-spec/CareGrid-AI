@@ -1,6 +1,10 @@
 import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
+  // Keep `next dev` output separate from `next build` / `next start`. Sharing
+  // `.next` lets a production build replace webpack chunks while a dev server
+  // is serving them, causing missing vendor-chunk runtime errors.
+  distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : '.next',
   // Do not advertise the framework (docs/19_DEPLOYMENT_DEVOPS.md §2)
   poweredByHeader: false,
   reactStrictMode: true,

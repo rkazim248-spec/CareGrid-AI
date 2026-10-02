@@ -70,6 +70,13 @@ import {
   rejectDispatchBodySchema,
   respondResponseSchema,
 } from '@/validators/dispatch';
+import {
+  incidentCreateBodySchema,
+  incidentCreateResponseSchema,
+  incidentDetailResponseSchema,
+  incidentListQuerySchema,
+  incidentListResponseSchema,
+} from '@/validators/incident';
 
 
 /* ========================================================================== */
@@ -505,6 +512,70 @@ export function aiTriage(
 export const aiTriageProbe = aiTriage;
 
 /* ========================================================================== */
+/* POST /api/incidents — the report submission                                 */
+/* ========================================================================== */
+
+/**
+ * Submit an emergency report.
+ *
+ * ---------------------------------------------------------------------------
+ * NO `retries`, AND THAT IS THE POINT
+ * ---------------------------------------------------------------------------
+ * `apiFetch`'s default is 0 retries, and this must stay that way. A retried POST
+ * would be a SECOND incident: the citizen would be told one reference and handed
+ * two documents, and a dispatcher would see the same emergency twice. The
+ * server rate-limits `incidents.create` per user, and one submit is one submit.
+ *
+ * If the call fails, the correct recovery is for the citizen to press send again
+ * deliberately — not for the client to replay a request it cannot see the result
+ * of. `report-form.tsx` therefore surfaces the error and leaves the draft intact.
+ *
+ * The response is parsed against `incidentCreateResponseSchema` rather than cast,
+ * so a server that changed shape produces a visible `MALFORMED_RESPONSE` here
+ * rather than a success screen showing `undefined` where a reference should be.
+ */
+export function createIncident(
+  input: z.input<typeof incidentCreateBodySchema>,
+  options: { signal?: AbortSignal } = {},
+): Promise<z.infer<typeof incidentCreateResponseSchema>> {
+  return apiFetch<unknown>('/api/incidents', {
+    method: 'POST',
+    body: incidentCreateBodySchema.parse(input),
+    signal: options.signal,
+    parse: (data) => incidentCreateResponseSchema.safeParse(data),
+  }) as Promise<z.infer<typeof incidentCreateResponseSchema>>;
+}
+
+/** Fetch the caller-scoped incident page. The server determines the scope. */
+export function listIncidents(
+  input: z.input<typeof incidentListQuerySchema> = {},
+  options: { signal?: AbortSignal } = {},
+): Promise<z.infer<typeof incidentListResponseSchema>> {
+  const query = incidentListQuerySchema.parse(input);
+  return apiFetch<unknown>('/api/incidents', {
+    method: 'GET',
+    query,
+    signal: options.signal,
+    parse: (data) => incidentListResponseSchema.safeParse(data),
+  }) as Promise<z.infer<typeof incidentListResponseSchema>>;
+}
+
+/** Fetch one incident after the server checks the caller's visibility. */
+export function getIncident(
+  incidentId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<z.infer<typeof incidentDetailResponseSchema>> {
+  if (!/^[A-Za-z0-9_-]{1,128}$/.test(incidentId)) {
+    return Promise.reject(new Error('That incident reference is not valid.'));
+  }
+  return apiFetch<unknown>(`/api/incidents/${encodeURIComponent(incidentId)}`, {
+    method: 'GET',
+    signal: options.signal,
+    parse: (data) => incidentDetailResponseSchema.safeParse(data),
+  }) as Promise<z.infer<typeof incidentDetailResponseSchema>>;
+}
+
+/* ========================================================================== */
 /* Phase 5 — evidence uploads (docs/15 §8.1)                                   */
 /* ========================================================================== */
 
@@ -752,4 +823,3 @@ export function notificationChannels(
 }
 
 export type { MeResponse };
-

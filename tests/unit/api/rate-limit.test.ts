@@ -108,7 +108,13 @@ describe('the rule table', () => {
   it('THROWS for an unknown route key rather than defaulting to no limit', () => {
     // "No limit because the rule was misspelled" is the worst possible failure
     // mode for this file.
-    expect(() => rateLimitFor('incidents.create')).toThrow();
+    //
+    // The key below is a typo on purpose. It was originally `incidents.create`,
+    // which was a fine example while `POST /api/incidents` did not exist — and
+    // became wrong the moment that route landed, because the key stopped being
+    // unknown. A test that quietly stops testing its own claim is worse than no
+    // test, so the example is now a key that can never collide with a real one.
+    expect(() => rateLimitFor('incidents.creat')).toThrow();
   });
 
   it('every 429 this table can produce is a catalogue code', () => {

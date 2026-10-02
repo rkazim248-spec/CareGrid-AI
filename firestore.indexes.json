@@ -3,6 +3,25 @@
   "//index_rule": "docs/07 11.2 note, restated because six of the Phase 8 additions exist only for this reason: array-membership fields (array-contains, in) must come BEFORE range and equality fields, AND every `where` clause a query uses must appear in the index. An index with a field the query omits cannot be used, and an index missing a field the query has cannot either - both fail identically.",
   "indexes": [
     {
+      "//": "Index 0 — the duplicate-candidate search in `services/geo/find-duplicates.ts`. MISSING until now, which is why every `POST /api/incidents` returned the `duplicate_check_unavailable` warning: the query failed with failed-precondition and `checkForDuplicates` correctly degraded instead of blocking the report. Field order follows `//index_rule`: the array-membership field (`geoCells`, CONTAINS) must come BEFORE the equality and range fields, and every `where` clause the query uses must appear.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "geoCells",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "deletedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
       "//": "Index 1 — the dispatcher queue default: active incidents, freshest first.",
       "collectionGroup": "incidents",
       "queryScope": "COLLECTION",

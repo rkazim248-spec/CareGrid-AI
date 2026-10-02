@@ -12,7 +12,6 @@ import {
   RevealableInput,
   fieldError,
 } from '@/components/auth/auth-form-kit';
-import { DEMO_DISCLAIMER } from '@/lib/constants';
 import { AuthError, signUp, signInWithGoogle } from '@/lib/firebase/auth';
 import { signUpFormSchema } from '@/validators/me';
 import { APP_TIMEZONE } from '@/lib/format';
@@ -114,7 +113,7 @@ export function SignupForm() {
         // bootstrap and land on a page with no role yet.
         //
         // The `?` keeps the query string if one was present on /signup.
-        router.replace('/report');
+        router.replace('/dashboard');
       } catch (error) {
         if (error instanceof AuthError) {
           if (error.field !== 'form') {
@@ -138,7 +137,7 @@ export function SignupForm() {
     try {
       const result = await signInWithGoogle();
       if (result === null) return;
-      router.replace('/report');
+      router.replace('/dashboard');
     } catch (error) {
       setFormError(error instanceof AuthError ? error.message : 'We could not sign you in.');
     } finally {
@@ -239,7 +238,7 @@ export function SignupForm() {
           <AlertTitle>What happens to a report</AlertTitle>
           <AlertDescription>
             Your report text, any photos, and an approximate location are shown to dispatchers and
-            to the responder assigned to it. Responders never see your name. {DEMO_DISCLAIMER}
+            to the responder assigned to it. Responders never see your name.
           </AlertDescription>
         </div>
       </Alert>
@@ -249,7 +248,7 @@ export function SignupForm() {
           id="signup-consent"
           checked={accepted}
           onCheckedChange={(checked) => setAccepted(checked === true)}
-          label="I understand this is a demonstration system and not an emergency service."
+          label="I understand CareGrid AI does not replace emergency services."
         />
         {fieldError({
           submitted,

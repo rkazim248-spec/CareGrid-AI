@@ -83,6 +83,7 @@ export const NAV_BY_ROLE: Record<UserRole, readonly NavGroup[]> = {
       id: 'report',
       label: 'Report',
       items: [
+        { href: '/dashboard', label: 'Dashboard', icon: ClipboardList },
         REPORT,
         { href: '/track', label: 'Track a report', icon: Search },
         { href: '/incidents', label: 'My reports', icon: ClipboardList },
@@ -206,7 +207,6 @@ export function routeAllows(href: string, role: UserRole): boolean {  if (href.s
     return role === 'admin';
   }
   if (href === '/analytics') return role === 'dispatcher' || role === 'admin';
-  if (href === '/dashboard') return role !== 'citizen';
   if (href === '/map') return role !== 'citizen';
   if (href === '/responders') return role !== 'citizen';
   if (href === '/dispatches') return role !== 'citizen';
@@ -218,7 +218,7 @@ export function rolesForRoute(href: string): readonly UserRole[] {
   if (href === '/admin/audit-logs') return ['dispatcher', 'admin'];
   if (href.startsWith('/admin')) return ['admin'];
   if (href === '/analytics') return ['dispatcher', 'admin'];
-  if (['/dashboard', '/map', '/responders', '/dispatches'].includes(href)) {
+  if (['/map', '/responders', '/dispatches'].includes(href)) {
     return ['responder', 'dispatcher', 'admin'];
   }
   return ['citizen', 'responder', 'dispatcher', 'admin'];

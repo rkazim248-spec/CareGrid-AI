@@ -46,6 +46,21 @@ export type ReportLocation = {
   readonly accuracyM: number | null;
   readonly accuracyGrade: AccuracyGrade;
   readonly placeName: string | null;
+  /**
+   * The coordinates, when there are any.
+   *
+   * These were ABSENT from this type, and that was a bug with teeth: the draft
+   * could hold a `source` and an accuracy and a place name while the fix itself
+   * was thrown away, so a report submitted from this form could never carry a
+   * location no matter what the citizen did on the map. The panel had nowhere to
+   * put the point.
+   *
+   * Nullable rather than absent because "no fix" is a real, common state — a
+   * citizen indoors, a denied permission, a laptop with no GPS — and pretending it
+   * is impossible is how it ends up being `0,0` in the Gulf of Guinea.
+   */
+  readonly lat: number | null;
+  readonly lng: number | null;
 };
 
 export const NO_LOCATION: ReportLocation = {
@@ -53,6 +68,8 @@ export const NO_LOCATION: ReportLocation = {
   accuracyM: null,
   accuracyGrade: 'unknown',
   placeName: null,
+  lat: null,
+  lng: null,
 };
 
 export type ReportDraft = {
@@ -61,6 +78,16 @@ export type ReportDraft = {
   readonly location: ReportLocation;
   readonly locationMethod: LocationMethod;
   readonly category: IncidentCategory | null;
+  /**
+   * The reporter's UI language, sent as an ISO code.
+   *
+   * `null` is not offered: FR-002 says the form is never blocked by language, and
+   * `pending` is what the server stores when it cannot identify one. It is a
+   * nullable field so a future "use English for me" toggle has somewhere to go.
+   */
+  readonly language: string | null;
+  /** FR-023. `null` is UNKNOWN, never 0 — 0 people affected is a real claim. */
+  readonly peopleAffected: number | null;
 };
 
 /** Which control the reporter used, so the flow can explain what happened. */
@@ -72,6 +99,8 @@ export const EMPTY_DRAFT: ReportDraft = {
   location: NO_LOCATION,
   locationMethod: 'none',
   category: null,
+  language: null,
+  peopleAffected: null,
 };
 
 /** FR-002: 20 characters OR any evidence item is enough to send. */

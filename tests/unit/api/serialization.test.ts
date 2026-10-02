@@ -209,7 +209,13 @@ describe('redactionProfile', () => {
     // In practice the resource gate has already refused this read with a 404, so
     // this profile is only reached on a list row — but the default must still be
     // the least-privileged one.
-    expect(redactionProfile({ viewer: other, ownerUid: 'u1' })).toBe('full');
+    //
+    // This assertion used to be `'full'`, which is the opposite of what the title
+    // and the comment above describe: `full` grants the original text AND the
+    // reporter's identity. A test whose name and comment state an intent and whose
+    // body contradicts it is worse than no test, because it reads as coverage of
+    // the exact case it is wrong about.
+    expect(redactionProfile({ viewer: other, ownerUid: 'u1' })).toBe('none');
   });
 
   it('dispatcher and admin get `full` on a record they do not own', () => {
@@ -223,15 +229,28 @@ describe('redactionProfile', () => {
     expect(redactionProfile({ viewer: { uid: 'r1', role: 'responder' }, ownerUid: 'u1', assigned: true })).toBe(
       'responder',
     );
+    // Unassigned falls through to the default. A responder who is NOT on the
+    // incident gets `none` — not `full`.
     expect(redactionProfile({ viewer: { uid: 'r1', role: 'responder' }, ownerUid: 'u1', assigned: false })).toBe(
-      'full',
+      'none',
     );
   });
 
   it('never grants a wider profile to admin by DEFAULT', () => {
     // A function whose default is "everything" is one refactor away from
-    // granting it to everyone.
+    // granting it to everyone. Admin reaches `full` through its explicit role
+    // branch above, not by falling off the end.
     expect(redactionProfile({ viewer: { uid: 'x', role: 'admin' } })).toBe('full');
+    expect(redactionProfile({ viewer: { uid: 'x', role: 'admin' }, ownerUid: 'someone_else' })).toBe('full');
+  });
+
+  it('a record with NO owner is still `none` for a citizen', () => {
+    // `ownerUid` undefined/null must not skip the ownership branch and land on a
+    // permissive default. This is the case a missing `ownerUid` field in a
+    // projection would create in production.
+    expect(redactionProfile({ viewer: { uid: 'u2', role: 'citizen' } })).toBe('none');
+    expect(redactionProfile({ viewer: { uid: 'u2', role: 'citizen' }, ownerUid: null })).toBe('none');
+    expect(redactionProfile({ viewer: { uid: 'u2', role: 'citizen' }, ownerUid: '' })).toBe('none');
   });
 });
 
@@ -253,6 +272,15 @@ describe('the profile gates', () => {
       expect(mayReadReporterIdentity(profile), `reporterUid/${profile}`).toBe(identity);
       expect(mayReadLocationText(profile), `locationText/${profile}`).toBe(location);
     }
+  });
+
+  it('`none` discloses nothing at all', () => {
+    // The default profile must be inert on every gate. If a future profile is added
+    // without updating these, this fails — which is the point of asserting all three
+    // separately rather than one combined boolean.
+    expect(mayReadOriginalText('none')).toBe(false);
+    expect(mayReadReporterIdentity('none')).toBe(false);
+    expect(mayReadLocationText('none')).toBe(false);
   });
 });
 

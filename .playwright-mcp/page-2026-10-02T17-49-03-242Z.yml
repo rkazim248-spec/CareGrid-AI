@@ -1,0 +1,115 @@
+- generic [active] [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - link "CareGrid AI" [ref=e6] [cursor=pointer]:
+          - /url: /
+        - link "Sign in" [ref=e12] [cursor=pointer]:
+          - /url: /login
+    - main [ref=e13]:
+      - generic [ref=e14]:
+        - generic [ref=e15]:
+          - generic [ref=e16]:
+            - heading "Community incident reporting, routed to the people who can help." [level=1] [ref=e17]
+            - paragraph [ref=e18]: CareGrid AI turns an unstructured report into a located, deduplicated incident that a dispatcher and a verified community responder can act on.
+          - generic [ref=e19]:
+            - link "Create an account" [ref=e20] [cursor=pointer]:
+              - /url: /signup
+            - link "Sign in" [ref=e21] [cursor=pointer]:
+              - /url: /login
+        - generic [ref=e26]:
+          - paragraph [ref=e27]: Contact emergency services first
+          - paragraph [ref=e28]: CareGrid AI helps organize incident reports but does not contact emergency services or replace emergency response. Call your local emergency number first when urgent help is needed.
+        - generic [ref=e29]:
+          - generic [ref=e30]:
+            - heading "How it works" [level=2] [ref=e31]
+            - paragraph [ref=e32]: Four steps from a sentence typed in a hurry to a resolved incident.
+          - list [ref=e33]:
+            - listitem [ref=e34]:
+              - generic [ref=e35]: Report
+              - paragraph [ref=e43]: Describe what is happening in your own words, add a photo or a voice note, and optionally share your location.
+            - listitem [ref=e44]:
+              - generic [ref=e45]: AI Triage
+              - paragraph [ref=e51]: CareGrid AI suggests a category, an urgency estimate, and any safety flags. A person checks every field before it counts.
+            - listitem [ref=e52]:
+              - generic [ref=e53]: Responder
+              - paragraph [ref=e61]: A dispatcher reads the report and assigns a verified community responder who is available and close by.
+            - listitem [ref=e62]:
+              - generic [ref=e63]: Resolution
+              - paragraph [ref=e68]: The responder marks arrival and resolution, and a dispatcher closes the report and keeps the record.
+        - generic [ref=e69]:
+          - generic [ref=e70]:
+            - heading "Core capabilities" [level=2] [ref=e71]
+            - paragraph [ref=e72]: What the platform does, and what it deliberately does not do.
+          - list [ref=e73]:
+            - listitem [ref=e74]:
+              - generic [ref=e75]:
+                - heading "Multimodal AI triage" [level=3] [ref=e81]
+                - paragraph [ref=e83]: Text, photos, and voice notes are read together to suggest a category, an urgency estimate, and the resources an incident needs.
+            - listitem [ref=e84]:
+              - generic [ref=e85]:
+                - heading "Live emergency map" [level=3] [ref=e90]
+                - paragraph [ref=e92]: Active incidents and responder availability on one map, with an equivalent list view so nothing is map-only.
+            - listitem [ref=e93]:
+              - generic [ref=e94]:
+                - heading "Smart duplicate detection" [level=3] [ref=e101]
+                - paragraph [ref=e103]: Nearby reports about the same incident are suggested for linking, so responders are not sent to the same place twice.
+            - listitem [ref=e104]:
+              - generic [ref=e105]:
+                - heading "Responder dispatch" [level=3] [ref=e112]
+                - paragraph [ref=e114]: A dispatcher assigns a verified responder by capability and distance, and sees acceptance without refreshing.
+            - listitem [ref=e115]:
+              - generic [ref=e116]:
+                - heading "Real-time status" [level=3] [ref=e121]
+                - paragraph [ref=e123]: Status changes reach the reporter, the dispatcher, and the assigned responder as they happen.
+            - listitem [ref=e124]:
+              - generic [ref=e125]:
+                - heading "Risk analytics" [level=3] [ref=e130]
+                - paragraph [ref=e132]: Incident volume, response times, and repeat locations, so a neighbourhood can see where help keeps being needed.
+        - generic [ref=e133]:
+          - generic [ref=e134]:
+            - heading "What this system does not do" [level=2] [ref=e135]
+            - paragraph [ref=e136]: An emergency product has to be honest about its limits, so they are stated here rather than in a footnote.
+          - list [ref=e137]:
+            - listitem [ref=e138]:
+              - generic [ref=e139]:
+                - heading "The AI is advisory" [level=3] [ref=e144]
+                - paragraph [ref=e146]: CareGrid AI produces an estimate from what was reported. It does not verify an incident, set urgency on its own, or assign anyone.
+            - listitem [ref=e147]:
+              - generic [ref=e148]:
+                - heading "A human dispatcher reviews and assigns" [level=3] [ref=e153]
+                - paragraph [ref=e155]: Every incident is read by a dispatcher, who confirms the details and assigns a verified community responder.
+            - listitem [ref=e156]:
+              - generic [ref=e157]:
+                - heading "No emergency service is contacted" [level=3] [ref=e162]
+                - paragraph [ref=e164]: This system does not call, message, or notify any police, ambulance, fire, or government service. It routes community responders only.
+    - contentinfo [ref=e165]:
+      - generic [ref=e167]:
+        - generic [ref=e168]:
+          - paragraph [ref=e169]: CareGrid AI
+          - paragraph [ref=e170]: A demonstration incident-routing platform for community reports and community responders.
+          - paragraph [ref=e171]: CareGrid AI does not contact emergency services. Call your local emergency number for urgent help.
+        - generic [ref=e172]:
+          - heading "Product" [level=2] [ref=e173]
+          - list [ref=e174]:
+            - listitem [ref=e175]:
+              - link "Report an incident" [ref=e176] [cursor=pointer]:
+                - /url: /report
+            - listitem [ref=e177]:
+              - link "How it works" [ref=e178] [cursor=pointer]:
+                - /url: /#how-it-works
+            - listitem [ref=e179]:
+              - link "Safety" [ref=e180] [cursor=pointer]:
+                - /url: /#safety
+            - listitem [ref=e181]:
+              - link "Privacy summary" [ref=e182] [cursor=pointer]:
+                - /url: /settings?tab=privacy
+        - generic [ref=e183]:
+          - heading "Email" [level=2] [ref=e184]
+          - link "hello@caregrid.example" [ref=e185] [cursor=pointer]:
+            - /url: mailto:hello@caregrid.example
+          - paragraph [ref=e186]: Demo enquiries are handled through the project repository, not by a support desk.
+  - region "Notifications alt+T"
+  - alert [ref=e187]

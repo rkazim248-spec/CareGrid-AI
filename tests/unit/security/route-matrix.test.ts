@@ -118,6 +118,7 @@ const ROUTES: readonly RouteCase[] = [
   { path: '/dispatches/[dispatchId]', method: 'POST', body: {}, params: { dispatchId: 'd_1' } },
   { path: '/dispatches/[dispatchId]', method: 'PUT', body: {}, params: { dispatchId: 'd_1' } },
   { path: '/dispatches/[dispatchId]', method: 'DELETE', body: {}, params: { dispatchId: 'd_1' } },
+  { path: '/incidents', method: 'POST', body: {} },
   { path: '/incidents/[id]/candidates', method: 'GET', params: { id: 'i_1' } },
   { path: '/incidents/[id]/dispatch', method: 'POST', body: {}, params: { id: 'i_1' } },
   { path: '/incidents/[id]/status', method: 'PATCH', body: {}, params: { id: 'i_1' } },

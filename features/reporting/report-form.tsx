@@ -18,13 +18,25 @@ import { REPORT_LIMITS } from '@/config';
 import { REPORT_COPY } from '@/features/reporting/report-copy';
 import { CategorySelector } from '@/features/reporting/category-selector';
 import { EvidenceUploader } from '@/features/reporting/evidence-uploader';
-import { startUpload, subscribeUploads, uploadSnapshot } from '@/features/reporting/upload-manager';
+import {
+  clearUploads,
+  collectAttachableMedia,
+  startUpload,
+  subscribeUploads,
+  uploadSnapshot,
+} from '@/features/reporting/upload-manager';
 import { LocationPanel } from '@/features/reporting/location-panel';
 import { ReviewPanel } from '@/features/reporting/review-panel';
 import { VoiceRecorder } from '@/features/reporting/voice-recorder';
 import { AiTriagePanel, type EditableTriage } from '@/features/reporting/ai-triage-panel';
 import { AI_TRIAGE_COPY } from '@/features/reporting/ai-triage-copy';
 import { mapTriageResponse } from '@/features/reporting/map-triage-response';
+import {
+  describeSubmitError,
+  submitReport,
+  toSubmitLocation,
+  type SubmitPhase,
+} from '@/features/reporting/submit-report';
 import type { AiTriageResponse, AiTriageStep } from '@/features/reporting/ai-triage-types';
 import type { PendingUpload, VoiceRecording } from '@/types/media';
 import { aiTriage } from '@/lib/api/client';
@@ -38,6 +50,11 @@ import {
   type LocationMethod,
 } from '@/features/reporting/report-types';
 import type { IncidentCategory } from '@/types';
+import type { z } from 'zod';
+import type { incidentCreateResponseSchema } from '@/validators/incident';
+
+/** What the form hands the view once the incident really exists. */
+export type CreatedIncident = z.infer<typeof incidentCreateResponseSchema>;
 
 /**
  * The report form — docs/04 §13.2.
@@ -52,7 +69,14 @@ import type { IncidentCategory } from '@/types';
  * right. The explainer is NOT a second column on mobile: a distressed person
  * scrolling one-handed should not have to read it before the fields.
  */
-const SUBMIT_LATENCY_MS = 1000;
+/**
+ * Submit is gated on `ready`, never on this.
+ *
+ * `SUBMIT_LATENCY_MS` was a `setTimeout` standing in for a network call, and it is
+ * gone. A simulated delay that nobody asked for is indistinguishable from a slow
+ * backend, and the only thing it bought was a spinner — so the duration is now
+ * however long `POST /api/incidents` actually takes.
+ */
 
 /**
  * How long each analysis step stays on screen.
@@ -68,9 +92,25 @@ const SUBMIT_LATENCY_MS = 1000;
  */
 const STEP_INTERVAL_MS = 420;
 
-export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
+/**
+ * What the button says while the one request is in flight.
+ *
+ * Each phase names what the SERVER is doing, not an animation. "Sending your
+ * report" while the body is on the wire and "Checking your report" while the
+ * attach, triage and duplicate check run is information; "Submitting…" forever is
+ * not. `checking` is included because it is the phase where a still-uploading file
+ * is discovered — and that phase usually ends in a refusal the citizen can act on,
+ * so labelling it as progress would be a lie.
+ */
+function phaseLabel(phase: SubmitPhase['phase']): string {
+  if (phase === 'checking') return 'Checking your attachments…';
+  if (phase === 'sending') return 'Sending your report…';
+  if (phase === 'finishing') return 'Confirming your report…';
+  return REPORT_COPY.submitting;
+}
+
+export function ReportForm({ onSubmitted }: { onSubmitted: (created: CreatedIncident) => void }) {
   const [draft, setDraft] = React.useState<ReportDraft>(EMPTY_DRAFT);
-  const [submitting, setSubmitting] = React.useState(false);
   const reasonRef = React.useRef<HTMLParagraphElement | null>(null);
   const reasonId = 'report-submit-reason';
   // A separate id, because two controls each need their own explanation and one
@@ -252,22 +292,80 @@ export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
     reasonRef.current?.focus();
   }, []);
 
+  /* --- the real submit ----------------------------------------------------- */
+  // `phase` rather than `isSubmitting: boolean`, because the form has three
+  // distinguishable in-flight states and a single boolean forces the button to lie
+  // about one of them. See `SubmitPhase` for why it is a union.
+  const [phase, setPhase] = React.useState<SubmitPhase>({ phase: 'idle' });
+  const [submitError, setSubmitError] = React.useState<string | null>(null);
+  // Set when a file was still uploading at submit time, so the form can block with
+  // a message that names the file instead of attaching nothing.
+  const [blockedMedia, setBlockedMedia] = React.useState<string | null>(null);
+
+  const submitting = phase.phase === 'checking' || phase.phase === 'sending' || phase.phase === 'finishing';
+
   const handleSubmit = React.useCallback(
     async (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      if (submitting) return;
       if (!ready) {
         explainDisabled();
         return;
       }
-      setSubmitting(true);
-      // No request is made in Phase 1. See report-copy.ts phaseNotice.
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, SUBMIT_LATENCY_MS);
-      });
-      setSubmitting(false);
-      onSubmitted();
+
+      setSubmitError(null);
+      setBlockedMedia(null);
+      setPhase({ phase: 'checking' });
+
+      // Read the upload store ONCE and reuse the snapshot for the attach. Reading it
+      // again after an `await` would pick up a file that started uploading in the
+      // meantime, and the count shown to the citizen would not match what was sent.
+      const media = collectAttachableMedia();
+
+      // A file still uploading is a BLOCK, not a silent omission. The citizen
+      // believes they attached a photo; submitting without it produces a
+      // text-only incident a dispatcher sees as exactly that.
+      if (media.inFlight.length > 0) {
+        const waiting = media.inFlight[0];
+        setBlockedMedia(
+          waiting !== undefined && waiting.fileName.length > 0
+            ? `“${waiting.fileName}” is still uploading. Please wait for it to finish, then send your report.`
+            : 'A file is still uploading. Please wait for it to finish, then send your report.',
+        );
+        setPhase({ phase: 'idle' });
+        return;
+      }
+
+      setPhase({ phase: 'sending' });
+
+      try {
+        const created = await submitReport({
+          text: draft.text,
+          // `null` is the honest "we could not identify one", which the server stores
+          // as `pending`. FR-002 says language never blocks the form, so there is no
+          // detected-language path here to invent.
+          language: draft.language ?? 'und',
+          location: toSubmitLocation(draft.location),
+          peopleAffected: draft.peopleAffected,
+          media: media.attachable,
+        });
+
+        setPhase({ phase: 'finishing' });
+
+        // Drop the staged files now that they are at a final path. Their staging
+        // objects were moved by the server; leaving them in the store would offer
+        // the citizen a "send again" that would attach media to a second
+        // incident.
+        clearUploads();
+
+        onSubmitted(created);
+      } catch (error) {
+        const described = describeSubmitError(error);
+        setSubmitError(described.message);
+        setPhase({ phase: 'failed', ...described });
+      }
     },
-    [ready, explainDisabled, onSubmitted],
+    [draft, ready, submitting, explainDisabled, onSubmitted],
   );
 
   return (
@@ -469,9 +567,21 @@ export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-end">
           {submitting ? (
             <div role="status" className="flex flex-col gap-1.5 lg:flex-1">
-              <ProgressIndeterminate label={REPORT_COPY.submitting} />
-              <p className="text-xs text-secondary">{REPORT_COPY.submitting}</p>
+              <ProgressIndeterminate label={phaseLabel(phase.phase)} />
+              <p className="text-xs text-secondary">{phaseLabel(phase.phase)}</p>
             </div>
+          ) : submitError !== null ? (
+            /* A FAILED submit is announced, not silently restorable. `role="alert"`
+             * moves focus to the message so a screen-reader user who pressed send
+             * learns the outcome rather than inferring it from the form resetting.
+             * The draft is untouched, which is the point of the message's wording. */
+            <Alert tone="danger" className="lg:flex-1">
+              <AlertIcon tone="danger" />
+              <div className="flex min-w-0 flex-col gap-1">
+                <AlertTitle>Your report was not sent</AlertTitle>
+                <AlertDescription>{submitError}</AlertDescription>
+              </div>
+            </Alert>
           ) : (
             <p className="hidden text-xs text-secondary lg:flex-1" />
           )}
@@ -499,7 +609,10 @@ export function ReportForm({ onSubmitted }: { onSubmitted: () => void }) {
               tabIndex={-1}
               className="text-xs text-warning focus:outline-none"
             >
-              {ready ? ' ' : REPORT_COPY.submitDisabledReason}
+              {/* The blocked-upload message takes precedence over the generic
+                  disabled reason: "add more detail" is the wrong advice when the
+                  real problem is that a photo is still uploading. */}
+              {blockedMedia ?? (ready ? ' ' : REPORT_COPY.submitDisabledReason)}
             </p>
           </div>
         </div>

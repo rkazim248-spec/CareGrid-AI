@@ -17,7 +17,7 @@ import { CoreCapabilities, DemoDisclaimer, TrustSection } from '@/features/landi
 export const metadata: Metadata = {
   title: 'CareGrid AI — community incident reporting and responder routing',
   description:
-    'CareGrid AI turns a community incident report into a located, deduplicated incident that a dispatcher and a verified community responder can act on. A demonstration system, not a replacement for a public emergency number.',
+    'CareGrid AI helps communities organize incident reports for dispatchers and verified responders. It does not contact emergency services.',
 };
 
 export default function Page() {

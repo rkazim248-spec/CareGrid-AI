@@ -8,8 +8,6 @@ import { cn } from '@/lib/cn';
 import { NAV_BY_ROLE } from '@/config/nav';
 import type { NavItem } from '@/config/nav';
 import { RoleBadge } from '@/components/domain/role-badge';
-import { DEMO_DISCLAIMER } from '@/lib/constants';
-import { DemoDataBadge } from '@/components/feedback/live-region';
 import { useResolvedSession } from '@/components/providers/session-provider';
 
 /**
@@ -77,8 +75,6 @@ export function SidebarNav({
             <p className="truncate text-xs text-secondary" title={user?.email ?? ''}>
               {displayName}
             </p>
-            <DemoDataBadge />
-            <p className="text-2xs leading-snug text-muted">{DEMO_DISCLAIMER}</p>
           </>
         )}
       </div>
