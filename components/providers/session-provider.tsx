@@ -358,7 +358,26 @@ export function SessionProvider({
       setMe(null);
       setFirebaseUser(null);
       setError(null);
-      clearTokenProvider();
+      // `clearTokenProvider()` is DELIBERATELY NOT called here.
+      //
+      // It used to be, and that was the production signup/session bug. Clearing
+      // the slot while this provider is still mounted leaves it null for the
+      // rest of the mount, because the effect that installs it depends only on
+      // `configurationProblem`, `defaultTimezone` and `loadMe` — none of which
+      // change when somebody signs out or back in, so nothing ever reinstalls
+      // it. The next `apiFetch` then found `tokenProvider === null` and threw
+      // "The session layer is not ready yet", which the gate renders as
+      // "We could not load this data". It only reproduced on a sign-out →
+      // sign-in cycle that did not reload the page, which is why it looked
+      // intermittent and never appeared in a fresh-page-load test.
+      //
+      // Nothing is given up by leaving it installed: the provider is a SEAM that
+      // asks Firebase for a token on demand, not a stored credential. Once the
+      // sign-out completes `getIdToken(false)` returns `null`, and `apiFetch`
+      // already turns that into a proper `AUTH_REQUIRED` "Sign in to continue".
+      // That is both more accurate than a missing provider and the behaviour the
+      // signed-out gate expects. Unregistering still happens in the effect
+      // cleanup, where the provider really is going away.
       setAuthStatus('signed-out');
     } finally {
       if (isMountedRef.current) setIsBusy(false);
