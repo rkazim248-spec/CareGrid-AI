@@ -226,25 +226,16 @@ export function SessionProvider({
 
   /* --- the profile load ------------------------------------------------- */
   const loadMe = React.useCallback(
-    async (uid: string, generation: number, timezone: string) => {
+    async (uid: string, generation: number, timezone: string, displayName: string | null) => {
       try {
-        let meResponse: MeResponse;
-        try {
-          meResponse = await meGet();
-        } catch (apiError) {
-          if (apiError instanceof ApiError && apiError.code === 'ACCOUNT_UNAVAILABLE') {
-            // A Firebase account with no `users/{uid}` document. That is exactly
-            // the first-run case, so bootstrap it rather than showing an error.
-            await meBootstrap({
-              displayName: 'New member',
-              timezone,
-              locale: 'en',
-            });
-            meResponse = await meGet();
-          } else {
-            throw apiError;
-          }
-        }
+        // Bootstrap is authenticated and idempotent. Running it first creates a
+        // missing server profile before GET /api/me can produce an expected 403.
+        await meBootstrap({
+          displayName: displayName?.trim() || 'New member',
+          timezone,
+          locale: 'en',
+        });
+        const meResponse: MeResponse = await meGet();
 
         // A response for a session the user has already left. Discard it.
         if (generation !== generationRef.current || !isMountedRef.current) return;
@@ -299,7 +290,12 @@ export function SessionProvider({
         photoURL: firebaseAuthUser.photoURL,
       });
       setAuthStatus('loading-profile');
-      void loadMe(firebaseAuthUser.uid, generation, defaultTimezone);
+      void loadMe(
+        firebaseAuthUser.uid,
+        generation,
+        defaultTimezone,
+        firebaseAuthUser.displayName,
+      );
     });
 
     return () => {
@@ -330,7 +326,12 @@ export function SessionProvider({
   /* --- actions ---------------------------------------------------------- */
   const refreshMe = React.useCallback(async () => {
     if (!firebaseUser) return;
-    await loadMe(firebaseUser.uid, generationRef.current + 1, defaultTimezone);
+    await loadMe(
+      firebaseUser.uid,
+      generationRef.current + 1,
+      defaultTimezone,
+      firebaseUser.displayName,
+    );
     generationRef.current += 1;
   }, [firebaseUser, loadMe, defaultTimezone]);
 

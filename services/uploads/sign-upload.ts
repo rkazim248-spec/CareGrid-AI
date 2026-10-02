@@ -35,9 +35,13 @@
 import 'server-only';
 
 import { randomBytes } from 'node:crypto';
+import { Timestamp } from 'firebase-admin/firestore';
+import { z } from 'zod';
 
 import { AppError } from '@/lib/server/errors';
 import { uploadConfig } from '@/lib/env.server';
+import { getAdminDb } from '@/lib/server/firebase-admin';
+import { COLLECTIONS } from '@/config/collections';
 import {
   ALLOWED_MEDIA,
   MEDIA_ID_ALPHABET,
@@ -96,20 +100,9 @@ export function generateMediaId(): string {
 /**
  * The 30-minute claim window.
  *
- * In-memory, and that is a deliberate, bounded, documented choice rather than an
- * oversight. A claim record says "this uid was issued this mediaId, at this size,
- * for this content type" — and its ONLY job is to stop a client finalizing or
- * attaching an object it did not upload.
- *
- * An in-memory store is adequate for that because the check it enables is also
- * re-derived from Storage on the next call: step 4 range-reads the object and
- * re-sniffs, and step 5 re-sniffs again. A lost claim record therefore costs a
- * faster failure path, not a security property.
- *
- * A Firestore-backed claim store would be more correct across a cold start and is
- * NOT built here, because it would add a write to the most latency-sensitive
- * endpoint in the product for a check that two other steps already perform. This
- * is recorded in `docs/30.6` rather than left to be discovered.
+ * Production claims are stored in a server-only user subcollection. Vercel may
+ * route sign, finalize and attach requests to different function instances, so
+ * process memory cannot establish upload ownership across those requests.
  */
 export type Claim = {
   readonly uid: string;
@@ -132,25 +125,65 @@ export type Claim = {
    * security-relevant. The `null` case is fine: a caller that needs a duration
    * displays nothing rather than a wrong one.
    */
-  readonly durationSec: number | undefined;
+  readonly durationSec?: number;
 };
 
 const claims = new Map<string, Claim>();
 
-/** Exported for the sweeper and for tests. Not a security boundary on its own. */
-export function claimFor(uid: string, mediaId: string): Claim | null {
-  const claim = claims.get(`${uid}/${mediaId}`);
-  if (claim === undefined) return null;
+const claimSchema = z
+  .object({
+    uid: z.string().min(1),
+    mediaId: z.string().regex(/^med_[A-Z2-7]{12}$/),
+    storagePath: z.string().min(1),
+    contentType: z.string().refine(
+      (value): value is AllowedMediaType => Object.prototype.hasOwnProperty.call(ALLOWED_MEDIA, value),
+    ),
+    declaredSizeBytes: z.number().int().positive(),
+    issuedAtMs: z.number().int().positive(),
+    kind: z.enum(['image', 'audio']),
+    durationSec: z.number().nonnegative().optional(),
+    expiresAt: z.instanceof(Timestamp),
+  })
+  .strict();
+
+function claimDocument(uid: string, mediaId: string) {
+  return getAdminDb()
+    .collection(COLLECTIONS.users)
+    .doc(uid)
+    .collection('uploadClaims')
+    .doc(mediaId);
+}
+
+/** Read the server-issued claim, shared across serverless function instances. */
+export async function claimFor(uid: string, mediaId: string): Promise<Claim | null> {
+  const key = `${uid}/${mediaId}`;
+  let claim: Claim | null;
+  if (process.env.NODE_ENV === 'test') {
+    claim = claims.get(key) ?? null;
+  } else {
+    const snapshot = await claimDocument(uid, mediaId).get();
+    if (!snapshot.exists) return null;
+    const parsed = claimSchema.safeParse(snapshot.data());
+    if (!parsed.success || parsed.data.uid !== uid || parsed.data.mediaId !== mediaId) return null;
+    claim = parsed.data;
+  }
+
+  if (claim === null) return null;
   if (Date.now() - claim.issuedAtMs > uploadConfig().stagingSweepMin * 60_000) {
-    claims.delete(`${uid}/${mediaId}`);
+    if (process.env.NODE_ENV === 'test') claims.delete(key);
+    else await claimDocument(uid, mediaId).delete();
     return null;
   }
   return claim;
 }
 
 /** Forget a claim. Called after the object has been moved or deleted. */
-export function releaseClaim(uid: string, mediaId: string): void {
-  claims.delete(`${uid}/${mediaId}`);
+export async function releaseClaim(uid: string, mediaId: string): Promise<void> {
+  if (process.env.NODE_ENV === 'test') {
+    claims.delete(`${uid}/${mediaId}`);
+    return;
+  }
+  await claimDocument(uid, mediaId).delete();
 }
 
 /** Test seam. */
@@ -285,8 +318,7 @@ export async function signUpload(
 
   const ext = entry.ext;
   const storagePath = stagingPathFor(uid, mediaId, ext);
-
-  claims.set(`${uid}/${mediaId}`, {
+  const claim: Claim = {
     uid,
     mediaId,
     storagePath,
@@ -294,8 +326,18 @@ export async function signUpload(
     declaredSizeBytes: body.sizeBytes,
     issuedAtMs: Date.now(),
     kind: body.kind,
-    durationSec: body.durationSec,
-  });
+    ...(body.durationSec === undefined ? {} : { durationSec: body.durationSec }),
+  };
+  if (process.env.NODE_ENV === 'test') {
+    claims.set(`${uid}/${mediaId}`, claim);
+  } else {
+    await claimDocument(uid, mediaId).create({
+      ...claim,
+      expiresAt: Timestamp.fromMillis(
+        claim.issuedAtMs + uploadConfig().stagingSweepMin * 60_000,
+      ),
+    });
+  }
 
   const { uploadUrl, expiresAt } = await signPutUrl(storagePath, body.contentType, maxSizeBytes);
 

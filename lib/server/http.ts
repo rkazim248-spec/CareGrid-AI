@@ -130,6 +130,8 @@ const ALLOWED_FIELDS = new Set([
   'claimRole',
   'docRole',
   'reason',
+  'causeName',
+  'causeMessage',
 ]);
 
 function sanitise(fields: Record<string, unknown>): Record<string, unknown> {
@@ -152,6 +154,20 @@ export type Logger = {
   warn: (fields: Record<string, unknown>) => void;
   error: (fields: Record<string, unknown>) => void;
 };
+
+export function safeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/https?:\/\/[^\s"'<>]+/gi, '[url]')
+    .replace(/\bBearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\bAIza[0-9A-Za-z_-]{30,}\b/g, '[redacted-key]')
+    .replace(/\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9._-]+\b/g, '[redacted-token]')
+    .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[email]')
+    .replace(/\b(?:staging|incidents|users)\/[^\s,]+/g, '[resource-path]')
+    .replace(/[A-Za-z]:\\[^\s,]+/g, '[path]')
+    .replace(/[\r\n]+/g, ' ')
+    .slice(0, 200);
+}
 
 /**
  * A logger bound to one request, so a handler does not have to pass

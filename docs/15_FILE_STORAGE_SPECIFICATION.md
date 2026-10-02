@@ -568,7 +568,7 @@ STEP 2  SIGNED URL ISSUANCE                          POST /api/uploads/sign
         → server GENERATES mediaId and the path staging/{token.uid}/{mediaId}.{ext}
         → returns { mediaId, storagePath, token, uploadUrl, expiresAt, maxSizeBytes,
                     requiredContentType }
-        → 30-minute claim window recorded for (uid, mediaId)
+        → 30-minute claim stored at users/{uid}/uploadClaims/{mediaId}; Firestore TTL removes expired claims
         → the client contributes NOTHING to the path or the filename
 
 STEP 3  DIRECT PUT                                  browser → firebasestorage.googleapis.com
@@ -580,7 +580,7 @@ STEP 3  DIRECT PUT                                  browser → firebasestorage.
 
 STEP 4  FINALIZE                                    POST /api/uploads/finalize { mediaId }
         requireUser() → assertResourceAccess(media: owner of the staging path)
-        → server range-reads the first 4 KiB (64 KiB for audio/webm)
+        → server reads the bounded image (≤ 5 MiB) to parse its dimensions; audio reads the configured sniff window
         → detectMediaType() (§5.2.7)
         → declared vs sniffed mismatch      ⇒ 415 UPLOAD_SIGNATURE_MISMATCH
         → not in the allow-list             ⇒ 415 UNSUPPORTED_MEDIA_TYPE
@@ -652,7 +652,7 @@ STEP 7  SERVING                                     GET /api/uploads/:mediaId/ur
 
 | Cap | Value | Enforced in | Why |
 | --- | --- | --- | --- |
-| Max width / height | **12 000 px** each | PNG `IHDR` parse; WebP `VP8 `/`VP8L` header; declared `clientWidth`/`clientHeight` in the sign request | A 12 000 × 12 000 image is 144 MP; decoding it to 4 bytes/px is 576 MB in a browser tab and will crash a mid-range phone |
+| Max width / height | **12 000 px** each | Client `createImageBitmap`; server PNG `IHDR`, JPEG `SOF`, or WebP `VP8`/`VP8L`/`VP8X` parse; declared dimensions are only an early sign-time check | A 12 000 × 12 000 image is 144 MP; decoding it to 4 bytes/px is 576 MB in a browser tab and will crash a mid-range phone |
 | Max total pixels | **40 MP** | same | Aspect-ratio-independent bound |
 | Client pre-downscale | Long edge → **1 600 px** if the original is larger; JPEG q0.85 | `features/reporting`, §9.2 | A citizen's evidence does not need 12 MP for a dispatcher to see a car crash. This also keeps the AI inline budget small |
 | AI inline budget | ≤ 1 024 px long edge, and only re-encoded if > 1.5 MB | [09](./09_AI_GEMINI_SPECIFICATION.md) §4.2 step 2 — **a `sharp`-free decision**, so in practice the original is passed and the token limit is relied on | — |

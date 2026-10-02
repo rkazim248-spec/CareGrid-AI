@@ -83,8 +83,9 @@ const DEFAULT_SNIFF_BYTES = 4096;
  * fail to play it". A citizen whose emergency report depends on their voice must
  * never lose it to a sniffing window.
  */
-function sniffWindowFor(contentType: AllowedMediaType | null): number {
+function sniffWindowFor(contentType: AllowedMediaType | null, sizeBytes: number): number {
   const { sniffBytes } = uploadConfig();
+  if (contentType !== null && ALLOWED_MEDIA[contentType].kind === 'image') return sizeBytes;
   if (contentType === 'audio/webm') return sniffBytes;
   return Math.min(DEFAULT_SNIFF_BYTES, sniffBytes);
 }
@@ -109,7 +110,7 @@ export async function finalizeUpload(
   const log = createLogger('');
 
   // --- 1. the claim, and only from our own record ----------------------
-  const claim = claimFor(uid, mediaId);
+  const claim = await claimFor(uid, mediaId);
   if (claim === null) {
     // docs/15 §8.2 step 4, "Object does not exist" is `404`. Here the object may
     // exist and simply not be ours, and the message must not distinguish the two —
@@ -123,7 +124,7 @@ export async function finalizeUpload(
   // --- 2. does the object exist, and how big? -------------------------
   const metadata = await objectExists(claim.storagePath);
   if (metadata === null) {
-    releaseClaim(uid, mediaId);
+    await releaseClaim(uid, mediaId);
     throw new AppError({
       code: 'UPLOAD_INCOMPLETE',
       message: 'That upload did not finish. Please try again.',
@@ -135,7 +136,7 @@ export async function finalizeUpload(
   // a range request to learn nothing.
   if (metadata.sizeBytes === 0) {
     await deleteObject(claim.storagePath);
-    releaseClaim(uid, mediaId);
+    await releaseClaim(uid, mediaId);
     throw new AppError({
       code: 'UPLOAD_INCOMPLETE',
       message: 'That upload did not finish. Please try again.',
@@ -147,17 +148,29 @@ export async function finalizeUpload(
     // Deleted rather than left: a truncated object is not evidence and the
     // citizen will re-upload, so keeping it only wastes quota.
     await deleteObject(claim.storagePath);
-    releaseClaim(uid, mediaId);
+    await releaseClaim(uid, mediaId);
     throw new AppError({
       code: 'UPLOAD_INCOMPLETE',
       message: 'That upload did not finish — the file arrived incomplete. Please try again.',
     });
   }
 
+  if (metadata.sizeBytes > ALLOWED_MEDIA[claim.contentType].maxBytes) {
+    await deleteObject(claim.storagePath);
+    await releaseClaim(uid, mediaId);
+    throw new AppError({
+      code: 'UPLOAD_TOO_LARGE',
+      message: 'That file is larger than the limit for its type.',
+    });
+  }
+
   // --- 4. read the head and sniff --------------------------------------
-  const head = await readHeadBytes(claim.storagePath, sniffWindowFor(claim.contentType));
+  const head = await readHeadBytes(
+    claim.storagePath,
+    sniffWindowFor(claim.contentType, metadata.sizeBytes),
+  );
   if (head === null) {
-    releaseClaim(uid, mediaId);
+    await releaseClaim(uid, mediaId);
     throw new AppError({ code: 'MEDIA_NOT_FOUND', message: 'That upload could not be read.' });
   }
 
@@ -165,7 +178,7 @@ export async function finalizeUpload(
 
   if (detected === null) {
     await deleteObject(claim.storagePath);
-    releaseClaim(uid, mediaId);
+    await releaseClaim(uid, mediaId);
     throw new AppError({
       code: 'UNSUPPORTED_MEDIA_TYPE',
       message:
@@ -180,7 +193,7 @@ export async function finalizeUpload(
       claim.mediaId,
       ALLOWED_MEDIA[claim.contentType].ext,
     );
-    releaseClaim(uid, mediaId);
+    await releaseClaim(uid, mediaId);
     // The quarantine path is safe to log and it is the one thing an operator needs:
     // `quarantine/{mediaId}.{ext}` contains no uid, so this is the ONE place in the
     // upload chain where a path is safe to put in a log line. A staging path is
@@ -204,7 +217,7 @@ export async function finalizeUpload(
   // --- 6. declared vs sniffed: the SNIFFED type wins -------------------
   if (detected.contentType !== claim.contentType) {
     await deleteObject(claim.storagePath);
-    releaseClaim(uid, mediaId);
+    await releaseClaim(uid, mediaId);
     throw new AppError({
       code: 'UPLOAD_SIGNATURE_MISMATCH',
       // Names both types, because that is what tells a person what went wrong
@@ -216,7 +229,7 @@ export async function finalizeUpload(
   // --- 7. the kind must still match ------------------------------------
   if (detected.kind !== claim.kind) {
     await deleteObject(claim.storagePath);
-    releaseClaim(uid, mediaId);
+    await releaseClaim(uid, mediaId);
     throw new AppError({
       code: 'UPLOAD_SIGNATURE_MISMATCH',
       message: 'That file does not match the kind of evidence you are adding.',
@@ -231,18 +244,26 @@ export async function finalizeUpload(
   const cap = ALLOWED_MEDIA[detected.contentType].maxBytes;
   if (metadata.sizeBytes > cap) {
     await deleteObject(claim.storagePath);
-    releaseClaim(uid, mediaId);
+    await releaseClaim(uid, mediaId);
     throw new AppError({ code: 'UPLOAD_TOO_LARGE', message: 'That file is larger than the limit for its type.' });
   }
 
   // --- 9. the image dimension caps, from the header --------------------
-  if (detected.kind === 'image' && detected.width !== null && detected.height !== null) {
+  if (detected.kind === 'image') {
+    if (detected.width === null || detected.height === null) {
+      await deleteObject(claim.storagePath);
+      await releaseClaim(uid, mediaId);
+      throw new AppError({
+        code: 'UNSUPPORTED_MEDIA_TYPE',
+        message: 'We could not read this photo. Please upload a valid JPG, PNG or WebP image.',
+      });
+    }
     const overDimension =
       detected.width > MEDIA_LIMITS.maxImageDimension || detected.height > MEDIA_LIMITS.maxImageDimension;
     const overMegapixels = detected.width * detected.height > MEDIA_LIMITS.maxImageMegapixels * 1_000_000;
     if (overDimension || overMegapixels) {
       await deleteObject(claim.storagePath);
-      releaseClaim(uid, mediaId);
+      await releaseClaim(uid, mediaId);
       throw new AppError({
         code: 'VALIDATION_FAILED',
         message: 'That photo is too large to process. Try a smaller one.',

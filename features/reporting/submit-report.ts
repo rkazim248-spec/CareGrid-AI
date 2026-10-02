@@ -240,11 +240,14 @@ export function describeSubmitError(error: unknown): {
         recoverable: true,
       };
     }
-    if (error.status === 401 || error.status === 403) {
+    if (error.status === 401) {
       return {
         message: 'Your session ended. Please sign in again — your report text is still here.',
         recoverable: false,
       };
+    }
+    if (error.status === 403) {
+      return { message: error.message, recoverable: false };
     }
     if (error.status === 400) {
       // The server's message is already written for a person (it names the photo
@@ -254,7 +257,7 @@ export function describeSubmitError(error: unknown): {
     }
     if (error.status === 502 || error.status === 503) {
       return {
-        message: 'The reporting service is temporarily unavailable. Your report text is safe — please try again.',
+        message: error.message,
         recoverable: true,
       };
     }

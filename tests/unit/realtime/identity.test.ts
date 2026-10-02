@@ -54,7 +54,7 @@ describe('listeners are closed on an identity change, and only then', () => {
 
   it('an ACCOUNT SWITCH tears down, and closes the PREVIOUS account, not the new one', () => {
     // The dangerous case and the reason this module exists. L5 is scoped
-    // `where('recipientUid','==',uid)`, so a listener that survives a switch is
+    // `where('recipientId','==',uid)`, so a listener that survives a switch is
     // still reading the first person's private correspondence.
     const decision = decideListenerTeardown({
       previousUid: 'alice',
@@ -205,7 +205,7 @@ describe('tearing down really detaches the channels', () => {
   it('three open channels are all detached by one teardown, and the count reports it', () => {
     // The three that carry another person's data on a shared device: `queue` is the
     // dispatcher's live incident queue, `notifications` is scoped
-    // `where('recipientUid','==',uid)` and is therefore one person's private
+    // `where('recipientId','==',uid)` and is therefore one person's private
     // correspondence, and `responderAssignments` is the dispatch board.
     const a = attach('queue', 'q:a');
     const b = attach('notifications', 'q:b');

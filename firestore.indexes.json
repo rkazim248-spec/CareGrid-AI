@@ -154,21 +154,17 @@
       ]
     },
     {
-      "//": "Index 9 — the notification bell: own unread, newest first.",
+      "//": "Index 9 — mark-all-read: the caller's own unread notifications.",
       "collectionGroup": "notifications",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "recipientUid",
+          "fieldPath": "recipientId",
           "order": "ASCENDING"
         },
         {
           "fieldPath": "read",
           "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "DESCENDING"
         }
       ]
     },
@@ -314,12 +310,12 @@
       ]
     },
     {
-      "//": "Index 17 (Phase 8) - L5. The shipped index 9 carries a `read` field this query does not filter, and an extra index field the query omits cannot be used — so the bell had no working index.",
+      "//": "Index 17 (Phase 8) - L5 notification listener, matching the recipientId field written by dispatch and enforced by rules.",
       "collectionGroup": "notifications",
       "queryScope": "COLLECTION",
       "fields": [
         {
-          "fieldPath": "recipientUid",
+          "fieldPath": "recipientId",
           "order": "ASCENDING"
         },
         {
@@ -369,7 +365,52 @@
           "order": "DESCENDING"
         }
       ]
+    },
+    {
+      "//": "Citizen incident list: deletedAt == null, reporterUid == uid, createdAt ASC and document-name cursor.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "deletedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "reporterUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "//": "Assigned incident list: deletedAt == null, assigneeUid == uid, createdAt ASC and document-name cursor.",
+      "collectionGroup": "incidents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "deletedAt",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "assigneeUid",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    {
+      "collectionGroup": "uploadClaims",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
+    }
+  ]
 }

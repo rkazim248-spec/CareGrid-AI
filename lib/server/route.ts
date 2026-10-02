@@ -75,6 +75,7 @@ import {
   assertSameOrigin,
   createLogger,
   requestIdFrom,
+  safeErrorMessage,
   type Logger,
 } from '@/lib/server/http';
 import { AppError, toAppError } from '@/lib/server/errors';
@@ -475,7 +476,12 @@ function errorResponse(
     log.error({
       code: appError.code,
       path: safePath(request),
-      ...(appError.cause === undefined ? {} : { causeName: causeName(appError.cause) }),
+      ...(appError.cause === undefined
+        ? {}
+        : {
+            causeName: causeName(appError.cause),
+            causeMessage: safeErrorMessage(appError.cause),
+          }),
     });
   } else {
     log.warn({ code: appError.code, path: safePath(request) });

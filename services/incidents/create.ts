@@ -42,17 +42,19 @@ import { COLLECTIONS, SUB_COLLECTIONS } from '@/config/collections';
 import { SLA_MINUTES } from '@/config/urgencies';
 import { REPORT_LIMITS } from '@/config/limits';
 import { BASE32_ALPHABET } from '@/validators/common';
+import { ALLOWED_MEDIA, ALLOWED_MEDIA_TYPES, validateMediaPath } from '@/validators/upload';
 import { buildGeoCells } from '@/lib/geo/geohash';
 import { getAdminDb } from '@/lib/server/firebase-admin';
-import { createLogger } from '@/lib/server/http';
+import { createLogger, safeErrorMessage } from '@/lib/server/http';
 import { toTriageRequest, triageIncident } from '@/services/ai/triage';
-import { attachEvidenceToIncident } from '@/services/uploads/evidence-attach';
+import { attachEvidenceToIncident, stageImageForAi } from '@/services/uploads/evidence-attach';
 import { checkForDuplicates } from '@/services/geo/find-duplicates';
 import { geocodeAddress, gradeForGeocode } from '@/services/maps/geocode';
 import {
   appendStatusHistoryInTransaction,
   buildStatusHistoryEvent,
 } from '@/services/dispatch/status-history';
+import type { TriageImage } from '@/lib/integrations/contracts';
 import type { UserRole } from '@/types/enums';
 
 /**
@@ -279,6 +281,46 @@ async function referenceFor(incidentId: string): Promise<string | null> {
   }
 }
 
+async function stageImagesForTriage(
+  uid: string,
+  media: readonly CreateIncidentMedia[],
+  log: ReturnType<typeof createLogger>,
+): Promise<readonly { readonly mediaId: string; readonly image: TriageImage }[]> {
+  const staged = await Promise.all(
+    media.map(async (item) => {
+      const parsed = validateMediaPath(item.storagePath, uid);
+      if (parsed === null || parsed.shape !== 'staging') return null;
+
+      const type = ALLOWED_MEDIA_TYPES.find((candidate) => ALLOWED_MEDIA[candidate].ext === parsed.ext);
+      if (type === undefined || ALLOWED_MEDIA[type].kind !== 'image') return null;
+
+      try {
+        const image = await stageImageForAi(uid, parsed.mediaId);
+        return {
+          mediaId: parsed.mediaId,
+          image: {
+            mimeType: image.contentType,
+            base64: image.base64,
+            sha256: image.sha256,
+            byteLength: image.byteLength,
+            fileName: `${parsed.mediaId}.${ALLOWED_MEDIA[type].ext}`,
+          },
+        };
+      } catch (error) {
+        log.warn({
+          code: 'AI_MEDIA_UNAVAILABLE',
+          path: 'incidents.triage',
+          status: 503,
+          causeName: error instanceof Error ? error.name : typeof error,
+          causeMessage: safeErrorMessage(error),
+        });
+        return null;
+      }
+    }),
+  );
+  return staged.filter((item): item is NonNullable<typeof item> => item !== null);
+}
+
 export async function createIncident(input: CreateIncidentInput): Promise<CreateIncidentResult> {
   const db = getAdminDb();
   const log = createLogger(input.context.requestId);
@@ -294,6 +336,8 @@ export async function createIncident(input: CreateIncidentInput): Promise<Create
   // check can run at all, and whether the map pin means anything.
   const { location, geocodeOutcome } = await resolveLocation(input.location, log);
   if (geocodeOutcome !== 'not_needed') warnings.push(geocodeOutcome);
+
+  const stagedImages = await stageImagesForTriage(input.reporterUid, input.media, log);
 
   /* --- 2. ATTACH EVIDENCE — before triage, so the counts are real --------- */
   // The order is load-bearing and it was previously wrong.
@@ -319,9 +363,16 @@ export async function createIncident(input: CreateIncidentInput): Promise<Create
   );
   const evidence = attachment.attached;
   const evidenceIds = evidence.map((item) => item.mediaId);
+  const attachedIds = new Set(evidenceIds);
+  const triageImages = stagedImages
+    .filter((item) => attachedIds.has(item.mediaId))
+    .map((item) => item.image);
 
   if (attachment.dropped.length > 0) warnings.push('evidence_dropped');
   if (attachment.storageDegraded) warnings.push('storage_unavailable');
+  if (evidence.filter((item) => item.kind === 'image').length > triageImages.length) {
+    warnings.push('triage_media_unavailable');
+  }
 
   /* --- 3. AI TRIAGE — never throws, never blocks (FR-029) ---------------- */
   const outcome = await triageIncident(
@@ -334,6 +385,7 @@ export async function createIncident(input: CreateIncidentInput): Promise<Create
       imageCount: evidence.filter((item) => item.kind === 'image').length,
       audioCount: evidence.filter((item) => item.kind === 'audio').length,
       newAccount: Date.now() / 1000 - input.context.authTimeSec < 300,
+      images: triageImages,
     }),
     {
       requestId: input.context.requestId,

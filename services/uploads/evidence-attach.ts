@@ -167,7 +167,22 @@ export async function attachEvidenceToIncident(
         // An interrupted upload that finalize was never called for. Nothing to
         // move, and leaving it would only delay the sweeper.
         await deleteObject(item.storagePath);
-        releaseClaim(uid, mediaId);
+        await releaseClaim(uid, mediaId);
+        dropped.push(mediaId);
+        continue;
+      }
+
+      const claim = await claimFor(uid, mediaId);
+      if (claim === null) {
+        await deleteObject(item.storagePath);
+        dropped.push(mediaId);
+        continue;
+      }
+
+      const cap = ALLOWED_MEDIA[claim.contentType].maxBytes;
+      if (metadata.sizeBytes > cap) {
+        await deleteObject(item.storagePath);
+        await releaseClaim(uid, mediaId);
         dropped.push(mediaId);
         continue;
       }
@@ -178,9 +193,14 @@ export async function attachEvidenceToIncident(
       const { sniffBytes } = uploadConfig();
       const head = await readHeadBytes(
         item.storagePath,
-        metadata.contentType === 'audio/webm' ? sniffBytes : Math.min(4096, sniffBytes),
+        claim.kind === 'image'
+          ? metadata.sizeBytes
+          : metadata.contentType === 'audio/webm'
+            ? sniffBytes
+            : Math.min(4096, sniffBytes),
       );
       if (head === null) {
+        await releaseClaim(uid, mediaId);
         dropped.push(mediaId);
         continue;
       }
@@ -192,17 +212,23 @@ export async function attachEvidenceToIncident(
         // second quarantine implementation is a second thing to get wrong. What
         // this must NOT do is attach an object whose type we cannot vouch for.
         await deleteObject(item.storagePath);
-        releaseClaim(uid, mediaId);
+        await releaseClaim(uid, mediaId);
         dropped.push(mediaId);
         log.warn({ code: 'UPLOAD_SIGNATURE_MISMATCH', path: 'uploads.attach', status: 415 });
         continue;
       }
 
       // --- the cap, against the SNIFFED type --------------------------
-      const cap = ALLOWED_MEDIA[detected.contentType].maxBytes;
-      if (metadata.sizeBytes > cap) {
+      if (detected.kind !== claim.kind || detected.contentType !== claim.contentType) {
         await deleteObject(item.storagePath);
-        releaseClaim(uid, mediaId);
+        await releaseClaim(uid, mediaId);
+        dropped.push(mediaId);
+        log.warn({ code: 'UPLOAD_SIGNATURE_MISMATCH', path: 'uploads.attach', status: 415 });
+        continue;
+      }
+      if (metadata.sizeBytes > ALLOWED_MEDIA[detected.contentType].maxBytes) {
+        await deleteObject(item.storagePath);
+        await releaseClaim(uid, mediaId);
         dropped.push(mediaId);
         continue;
       }
@@ -216,8 +242,7 @@ export async function attachEvidenceToIncident(
 
       // --- the hash, recomputed at the authoritative moment ----------
       const sha256 = await sha256OfObject(item.storagePath);
-      const claim = claimFor(uid, mediaId);
-      if (claim !== null && claim.declaredSizeBytes !== metadata.sizeBytes) {
+      if (claim.declaredSizeBytes !== metadata.sizeBytes) {
         // The object changed size between sign and create. docs/15 §8.1 step 4
         // would have caught this, but create is the authoritative moment and this
         // is the last point at which the bytes can be questioned.
@@ -228,7 +253,7 @@ export async function attachEvidenceToIncident(
 
       // --- the move: copy, THEN delete (docs/15 §3.3) ---------------
       await moveStagedToFinal(item.storagePath, finalPath);
-      releaseClaim(uid, mediaId);
+      await releaseClaim(uid, mediaId);
 
       attached.push({
         mediaId,
@@ -587,7 +612,7 @@ async function readStagedForAi(
   mediaId: string,
   expectedKind: 'image' | 'audio',
 ): Promise<StagedRead> {
-  const claim = claimFor(uid, mediaId);
+  const claim = await claimFor(uid, mediaId);
   if (claim === null) {
     throw new AppError({
       code: 'MEDIA_NOT_FOUND',

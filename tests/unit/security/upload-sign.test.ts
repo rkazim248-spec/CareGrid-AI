@@ -65,7 +65,9 @@ const signPutUrl = vi.fn(async (_path: string, _contentType: string, _maxBytes: 
 
 vi.mock('@/services/uploads/evidence-storage', () => ({ signPutUrl }));
 
-const { signUpload, claimFor, releaseClaim } = await import('@/services/uploads/sign-upload');
+const { signUpload, claimFor, releaseClaim, resetClaimsForTests } = await import(
+  '@/services/uploads/sign-upload'
+);
 
 const UID = 'u_reporter';
 
@@ -124,6 +126,7 @@ async function codeOf(uid: string, raw: Record<string, unknown>): Promise<string
 
 beforeEach(() => {
   signPutUrl.mockClear();
+  resetClaimsForTests();
   delete process.env.UPLOAD_MAX_IMAGE_BYTES;
   delete process.env.UPLOAD_MAX_AUDIO_BYTES;
   delete process.env.UPLOAD_MAX_AUDIO_SEC;
@@ -424,7 +427,7 @@ describe('key secrecy', () => {
 describe('claim isolation', () => {
   it('records the claim under the caller, not under a supplied uid', async () => {
     const { mediaId } = await sign('u_victim', imageBody());
-    expect(claimFor('u_victim', mediaId)).not.toBeNull();
+    await expect(claimFor('u_victim', mediaId)).resolves.not.toBeNull();
   });
 
   it('another user cannot read the claim', async () => {
@@ -432,17 +435,17 @@ describe('claim isolation', () => {
     // THE IDOR this layer exists to stop. `finalize` looks the path up from this
     // record and never from the request, so a stolen mediaId resolves to nothing
     // for anyone but its owner.
-    expect(claimFor('u_attacker', mediaId)).toBeNull();
-    expect(claimFor('u_attacker', mediaId)).toBeNull();
+    await expect(claimFor('u_attacker', mediaId)).resolves.toBeNull();
+    await expect(claimFor('u_attacker', mediaId)).resolves.toBeNull();
   });
 
   it('an unknown mediaId resolves to nothing at all', async () => {
-    expect(claimFor(UID, 'med_AAAAAAAAAAAAAAAA')).toBeNull();
+    await expect(claimFor(UID, 'med_AAAAAAAAAAAAAAAA')).resolves.toBeNull();
   });
 
   it('the claim stores what finalize needs and does not leak a path back to the caller', async () => {
     const { mediaId } = await sign(UID, imageBody({ displayName: 'holiday snap.jpg' }));
-    const claim = claimFor(UID, mediaId);
+    const claim = await claimFor(UID, mediaId);
     expect(claim).not.toBeNull();
     expect(claim?.storagePath).toContain('staging/');
     expect(claim?.declaredSizeBytes).toBe(1_000_000);
@@ -453,16 +456,16 @@ describe('claim isolation', () => {
 
   it('releasing a claim is idempotent, so a double-finalize cannot throw', async () => {
     const { mediaId } = await sign(UID, imageBody());
-    releaseClaim(UID, mediaId);
-    expect(() => releaseClaim(UID, mediaId)).not.toThrow();
-    expect(claimFor(UID, mediaId)).toBeNull();
+    await releaseClaim(UID, mediaId);
+    await expect(releaseClaim(UID, mediaId)).resolves.toBeUndefined();
+    await expect(claimFor(UID, mediaId)).resolves.toBeNull();
   });
 
   it('a fresh claim is issued for a second upload even for the same user', async () => {
     const first = await sign(UID, imageBody());
     const second = await sign(UID, imageBody());
     expect(first.mediaId).not.toBe(second.mediaId);
-    expect(claimFor(UID, first.mediaId)).not.toBeNull();
-    expect(claimFor(UID, second.mediaId)).not.toBeNull();
+    await expect(claimFor(UID, first.mediaId)).resolves.not.toBeNull();
+    await expect(claimFor(UID, second.mediaId)).resolves.not.toBeNull();
   });
 });

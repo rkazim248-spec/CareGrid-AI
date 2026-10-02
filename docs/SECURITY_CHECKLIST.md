@@ -262,7 +262,7 @@ Legend: `C##` = a mechanical check in `scripts/security-check.cjs`.
 
 | | Item | Evidence |
 | :-: | --- | --- |
-| ✅ | Listeners are scoped to the authenticated user | L5 `where('recipientUid','==',uid)` |
+| ✅ | Listeners are scoped to the authenticated user | L5 `where('recipientId','==',uid)` |
 | ✅ | The L5 hook exposes **no** parameter to widen it | Phase 9 check: exactly one option, `seed` |
 | ✅ | Listeners unsubscribe on unmount | `useRealtimeListener` |
 | ✅ | **Listeners close on an identity change** | C75, C76, C77 + 15 tests. **CG-10-01 fix** |
@@ -277,11 +277,11 @@ Legend: `C##` = a mechanical check in `scripts/security-check.cjs`.
 
 | | Item | Evidence |
 | :-: | --- | --- |
-| ✅ | A notification belongs to one recipient | `recipientUid`, the query key |
+| ✅ | A notification belongs to one recipient | `recipientId`, the query and rules key |
 | ✅ | Recipients are **server-determined** | `recipientsForEvent`, Phase 7 |
 | ✅ | A client cannot create a notification | rules: `allow create: if false` |
 | ✅ | A client cannot delete one | rules: `if false` |
-| ✅ | A user cannot read another user's | rules: `resource.data.recipientUid == request.auth.uid` |
+| ✅ | A user cannot read another user's | rules: `resource.data.recipientId == request.auth.uid` |
 | ✅ | A user cannot mark another's as read | same scoping on update |
 | ✅ | The only client write is `read`/`readAt`/`updatedAt` | `hasOnly` |
 | ✅ | Metadata exposes no sensitive incident data | mapper projects a declared subset |
@@ -415,7 +415,7 @@ the CSS; that is not the same as seeing it.
 | ✅ | A limit cannot be raised beyond its declared ceiling | registry throws |
 | ✅ | Analytics reads are bounded | `LIVE_SCAN_CAP = 500`, `MAX_RANGE_DAYS = 366` |
 | ✅ | No listener reads a precomputed collection | Phase 9 check (FR-099) |
-| ✅ | Queries are bounded and indexed | `firestore.indexes.json`, 19 indexes |
+| ✅ | Queries are bounded and indexed | `firestore.indexes.json`, 22 indexes |
 | ✅ | Charts do not re-render needlessly | `React.memo`, stable series |
 | ✅ | A query key prevents re-subscription | `queryKey` string |
 | ⚠️ | **Initial load measured** | **NEEDS REVIEW** — no browser, no Lighthouse. |
@@ -476,7 +476,7 @@ the CSS; that is not the same as seeing it.
 | ✅ | `firebase.json` declares rules and indexes, and no Hosting | hosting deliberately unset; Vercel is the target |
 | ⚠️ | **Firestore rules deployed** | **NEEDS REVIEW** — `firebase deploy --only firestore:rules` not run. |
 | ⚠️ | **Storage rules deployed** | **NEEDS REVIEW** — not run. |
-| ⚠️ | **19 indexes deployed** | **NEEDS REVIEW** — not run. An un-deployed index is a `failed-precondition` that renders as "not enough data". |
+| ⚠️ | **22 indexes deployed** | **NEEDS REVIEW** — not run. An un-deployed index is a `failed-precondition` that renders as "not enough data". |
 | ⚠️ | **Authorised domains configured** | **NEEDS REVIEW** — console setting. |
 | ⚠️ | **Auth providers as documented** | **NEEDS REVIEW** — console. |
 | ⚠️ | **API keys restricted** | **NEEDS REVIEW** — console. |

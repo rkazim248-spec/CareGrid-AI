@@ -143,6 +143,41 @@ function be32(buf: Uint8Array, offset: number): number | null {
   );
 }
 
+/** Little-endian uint16/uint24/uint32. */
+function le16(buf: Uint8Array, offset: number): number | null {
+  if (buf.length < offset + 2) return null;
+  return (buf[offset] as number) | ((buf[offset + 1] as number) << 8);
+}
+
+function le24(buf: Uint8Array, offset: number): number | null {
+  if (buf.length < offset + 3) return null;
+  return (
+    (buf[offset] as number) |
+    ((buf[offset + 1] as number) << 8) |
+    ((buf[offset + 2] as number) << 16)
+  );
+}
+
+function le32(buf: Uint8Array, offset: number): number | null {
+  if (buf.length < offset + 4) return null;
+  return (
+    (buf[offset] as number) +
+    (buf[offset + 1] as number) * 0x100 +
+    (buf[offset + 2] as number) * 0x10000 +
+    (buf[offset + 3] as number) * 0x1000000
+  );
+}
+
+function validImageDimensions(width: number, height: number): boolean {
+  return (
+    width > 0 &&
+    height > 0 &&
+    width <= MEDIA_LIMITS.maxImageDimension &&
+    height <= MEDIA_LIMITS.maxImageDimension &&
+    width * height <= MEDIA_LIMITS.maxImageMegapixels * 1_000_000
+  );
+}
+
 /* ========================================================================== */
 /* Executable and archive signatures — §6                                        */
 /* ========================================================================== */
@@ -214,6 +249,42 @@ function jpegLooksReal(buf: Uint8Array): boolean {
   return true;
 }
 
+/** JPEG SOF dimensions, parsed from the marker segments before the image scan. */
+function jpegDimensions(buf: Uint8Array): { width: number; height: number } | null {
+  let offset = 2;
+  while (offset + 1 < buf.length) {
+    if (buf[offset] !== 0xff) return null;
+    while (buf[offset] === 0xff) offset += 1;
+    const marker = buf[offset];
+    offset += 1;
+    if (marker === undefined || marker === 0x00 || marker === 0xda || marker === 0xd9) return null;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+
+    const segmentLength = be16(buf, offset);
+    if (segmentLength === null || segmentLength < 2 || offset + segmentLength > buf.length) return null;
+
+    const isStartOfFrame =
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf);
+    if (isStartOfFrame) {
+      const height = be16(buf, offset + 3);
+      const width = be16(buf, offset + 5);
+      if (width === null || height === null || !validImageDimensions(width, height)) return null;
+      return { width, height };
+    }
+
+    offset += segmentLength;
+  }
+  return null;
+}
+
+function be16(buf: Uint8Array, offset: number): number | null {
+  if (buf.length < offset + 2) return null;
+  return ((buf[offset] as number) << 8) | (buf[offset + 1] as number);
+}
+
 /** PNG: signature + IHDR + dimensions within the caps. docs/15 §5.2.2. */
 function pngDimensions(buf: Uint8Array): { width: number; height: number } | null {
   if (chunk(buf, 12) !== 'IHDR') return null;
@@ -230,9 +301,7 @@ function pngLooksReal(buf: Uint8Array): { width: number; height: number } | null
   // §5.2.2: "Both must be > 0 and <= MAX_IMAGE_DIMENSION". A zero dimension is a
   // crafted header, and a 60 000 x 60 000 PNG inside 5 MB is the decompression
   // bomb the §5.4 table names.
-  if (width <= 0 || height <= 0) return null;
-  if (width > MEDIA_LIMITS.maxImageDimension || height > MEDIA_LIMITS.maxImageDimension) return null;
-  if (width * height > MEDIA_LIMITS.maxImageMegapixels * 1_000_000) return null;
+  if (!validImageDimensions(width, height)) return null;
   // §5.2.2: "Reject if the first 4 KiB contains neither IEND nor at least one IDAT".
   // A PNG whose first chunk is IHDR and which has no IDAT in the window is a
   // header, not a picture.
@@ -254,6 +323,60 @@ function webpLooksReal(buf: Uint8Array): boolean {
   // A RIFF container that is not WebP: WAVE, AVI , and friends. This is the check
   // that stops a renamed audio file.
   return false;
+}
+
+/** WebP dimensions from the VP8, VP8L or VP8X image chunk. */
+function webpDimensions(buf: Uint8Array): { width: number; height: number } | null {
+  const riffSize = le32(buf, 4);
+  if (riffSize === null || riffSize + 8 > buf.length) return null;
+
+  const riffEnd = riffSize + 8;
+  let offset = 12;
+  while (offset + 8 <= riffEnd) {
+    const type = chunk(buf, offset);
+    const size = le32(buf, offset + 4);
+    if (type === null || size === null) return null;
+    const dataOffset = offset + 8;
+    const dataEnd = dataOffset + size;
+    if (dataEnd > riffEnd) return null;
+
+    let width: number | null = null;
+    let height: number | null = null;
+    if (type === 'VP8X' && size >= 10) {
+      const widthMinusOne = le24(buf, dataOffset + 4);
+      const heightMinusOne = le24(buf, dataOffset + 7);
+      if (widthMinusOne !== null && heightMinusOne !== null) {
+        width = widthMinusOne + 1;
+        height = heightMinusOne + 1;
+      }
+    } else if (type === 'VP8 ' && size >= 10) {
+      if (
+        buf[dataOffset + 3] === 0x9d &&
+        buf[dataOffset + 4] === 0x01 &&
+        buf[dataOffset + 5] === 0x2a
+      ) {
+        const rawWidth = le16(buf, dataOffset + 6);
+        const rawHeight = le16(buf, dataOffset + 8);
+        if (rawWidth !== null && rawHeight !== null) {
+          width = rawWidth & 0x3fff;
+          height = rawHeight & 0x3fff;
+        }
+      }
+    } else if (type === 'VP8L' && size >= 5 && buf[dataOffset] === 0x2f) {
+      const b1 = buf[dataOffset + 1] as number;
+      const b2 = buf[dataOffset + 2] as number;
+      const b3 = buf[dataOffset + 3] as number;
+      const b4 = buf[dataOffset + 4] as number;
+      width = 1 + b1 + ((b2 & 0x3f) << 8);
+      height = 1 + (b2 >> 6) + (b3 << 2) + ((b4 & 0x0f) << 10);
+    }
+    if (width !== null && height !== null) {
+      return validImageDimensions(width, height) ? { width, height } : null;
+    }
+
+    offset = dataEnd + (size & 1);
+  }
+  return null;
 }
 
 /** EBML header, version 01, and the `webm` DocType. §5.2.4. */
@@ -340,7 +463,9 @@ export function detectMediaType(buf: Uint8Array): Detected | null {
 
   /* --- 2. image/jpeg --------------------------------------------------- */
   if (starts(buf, [0xff, 0xd8, 0xff]) && jpegLooksReal(buf)) {
-    return { contentType: 'image/jpeg', kind: 'image', confidence: 'exact', width: null, height: null, durationSec: null };
+    const dimensions = jpegDimensions(buf);
+    if (dimensions === null) return null;
+    return { contentType: 'image/jpeg', kind: 'image', confidence: 'exact', ...dimensions, durationSec: null };
   }
 
   /* --- 3. image/png ---------------------------------------------------- */
@@ -363,7 +488,9 @@ export function detectMediaType(buf: Uint8Array): Detected | null {
 
   /* --- 4. image/webp --------------------------------------------------- */
   if (starts(buf, [0x52, 0x49, 0x46, 0x46]) && webpLooksReal(buf)) {
-    return { contentType: 'image/webp', kind: 'image', confidence: 'exact', width: null, height: null, durationSec: null };
+    const dimensions = webpDimensions(buf);
+    if (dimensions === null) return null;
+    return { contentType: 'image/webp', kind: 'image', confidence: 'exact', ...dimensions, durationSec: null };
   }
 
   /* --- 5. audio/webm --------------------------------------------------- */

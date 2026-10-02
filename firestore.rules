@@ -380,7 +380,7 @@ service firebase.firestore {
     /* ===================================================================== */
 
     match /notifications/{notificationId} {
-      allow get, list: if isSignedIn() && resource.data.recipientUid == request.auth.uid;
+      allow get, list: if isSignedIn() && resource.data.recipientId == request.auth.uid;
       allow create, delete: if false;
 
       /**
@@ -389,7 +389,7 @@ service firebase.firestore {
        * notification that looks like it came from a dispatcher.
        */
       allow update: if isSignedIn()
-        && resource.data.recipientUid == request.auth.uid
+        && resource.data.recipientId == request.auth.uid
         && request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(['read', 'readAt', 'updatedAt']);
     }

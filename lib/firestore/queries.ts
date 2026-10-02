@@ -287,19 +287,19 @@ export function responderLocationQuery(
 /* ========================================================================== */
 
 /**
- * `docs/11 §2.2` **L5**: `notifications` | `recipientUid == uid` (only, never
+ * `docs/11 §2.2` **L5**: `notifications` | `recipientId == uid` (only, never
  * widened) | `createdAt DESC` | 50.
  *
  * **SEC-4: there is no parameter to widen it.** Not a default that could be
  * overridden, not an option that defaults to own — no parameter exists. A
- * `?recipientUid=` in the client path would be a `permission-denied` waiting to
+ * `?recipientId=` in the client path would be a `permission-denied` waiting to
  * happen, and a rule change that accidentally permitted it would be invisible.
  * The only argument is the caller's own uid.
  */
 export function notificationQuery(db: FirestoreLike, uid: string): Query {
   return fsQuery(
     fsCollection(db, COLLECTIONS.notifications),
-    fsWhere('recipientUid', '==', uid),
+    fsWhere('recipientId', '==', uid),
     fsOrderBy('createdAt', 'desc'),
     fsLimit(50),
   );

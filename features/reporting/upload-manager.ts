@@ -46,6 +46,7 @@ import { getUploadLimits } from '@/lib/env.client';
 import {
   ALLOWED_AUDIO_TYPES,
   ALLOWED_IMAGE_TYPES,
+  MEDIA_LIMITS,
   type AllowedMediaType,
   type MediaKind,
 } from '@/validators/upload';
@@ -375,12 +376,24 @@ export type StartUploadOptions = {
   readonly durationSec?: number;
   /** The reporter's own filename. Sent as a display hint, never as a path. */
   readonly displayName: string;
-  /** Image dimensions, when cheaply known. A claim; re-checked server-side. */
-  readonly clientWidth?: number;
-  readonly clientHeight?: number;
   /** Fires on real byte progress. Never on a timer. */
   readonly onProgress?: (percent: number) => void;
 };
+
+async function measureImageDimensions(
+  file: File,
+): Promise<{ readonly width: number; readonly height: number } | null> {
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    return null;
+  }
+
+  const dimensions = { width: bitmap.width, height: bitmap.height };
+  bitmap.close();
+  return dimensions;
+}
 
 /** What one upload produced. */
 export type StartUploadResult =
@@ -449,6 +462,29 @@ export async function startUpload(
       return { ok: false, localId, rejection };
     }
 
+    const dimensions = kind === 'image' ? await measureImageDimensions(file) : null;
+    if (kind === 'image' && dimensions === null) {
+      const imageRejection: UploadRejection = {
+        code: 'UNREADABLE',
+        message: 'We could not read that photo. Please choose a JPG, PNG or WebP image.',
+      };
+      advance(localId, 'failed', { error: imageRejection.message, retryable: false });
+      return { ok: false, localId, rejection: imageRejection };
+    }
+    if (
+      dimensions !== null &&
+      (dimensions.width > MEDIA_LIMITS.maxImageDimension ||
+        dimensions.height > MEDIA_LIMITS.maxImageDimension ||
+        dimensions.width * dimensions.height > MEDIA_LIMITS.maxImageMegapixels * 1_000_000)
+    ) {
+      const imageRejection: UploadRejection = {
+        code: 'UNREADABLE',
+        message: 'That photo is too large to process. Try a smaller one.',
+      };
+      advance(localId, 'failed', { error: imageRejection.message, retryable: false });
+      return { ok: false, localId, rejection: imageRejection };
+    }
+
     advance(localId, 'ready');
 
     // --- 2. sign -------------------------------------------------------
@@ -458,8 +494,8 @@ export async function startUpload(
       contentType: file.type,
       sizeBytes: file.size,
       durationSec: options.durationSec,
-      clientWidth: options.clientWidth,
-      clientHeight: options.clientHeight,
+      clientWidth: dimensions?.width,
+      clientHeight: dimensions?.height,
       displayName,
       intent: 'report',
     });
