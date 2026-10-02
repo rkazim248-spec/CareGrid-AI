@@ -144,7 +144,6 @@ describe('the CSP does not break the integrations', () => {
     ['connect-src', 'securetoken.googleapis.com', 'token refresh, so a session survives an hour'],
     ['connect-src', 'wss://*.firebaseio.com', 'the realtime listeners in docs/11'],
     ['connect-src', 'firebasestorage.googleapis.com', 'evidence images, Phase 5'],
-    ['script-src', 'maps.googleapis.com', 'the Maps JavaScript API, Phase 6'],
     ['img-src', 'firebasestorage.googleapis.com', 'an evidence image from a signed URL'],
     ['frame-src', 'accounts.google.com', 'the Google sign-in flow'],
     ['frame-src', '*.firebaseapp.com', 'the Firebase Auth iframe flow'],
@@ -160,6 +159,44 @@ describe('the CSP does not break the integrations', () => {
       expect(line, `${name} must allow ${host}`).toContain(host);
     });
   }
+
+  it('Google Maps appears in NO directive, because the Maps JS API is never loaded', () => {
+    // The browser-side map is Mapbox GL (`mapbox-gl`, dynamically imported by
+    // `features/analytics/risk-map.tsx`), not the Google Maps JavaScript API.
+    // Nothing imports or injects a Maps script, and the only Maps call —
+    // `services/maps/reverse-geocode.ts` — is server-to-server, which no browser
+    // directive can affect.
+    //
+    // This was previously asserted the other way round: the policy was required
+    // to ALLOW `maps.googleapis.com` in `script-src` "for Phase 6". Under
+    // `'strict-dynamic'` browsers ignore host allowlists in `script-src`
+    // entirely, so that entry was inert while still implying the policy had been
+    // reviewed for Maps. Asserting its absence is what stops it creeping back.
+    for (const origin of ['maps.googleapis.com', 'maps.gstatic.com']) {
+      const directiveLines = raw
+        .split('\n')
+        .filter((l) => !/^\s*(\*|\/\/)/.test(l) && l.includes(origin));
+      expect(
+        directiveLines,
+        `${origin} must not appear in any CSP directive; the Maps JS API is not loaded`,
+      ).toEqual([]);
+    }
+  });
+
+  it('the nonce reaches Next.js on the REQUEST, which is the only channel it reads', () => {
+    // THE stuck-on-loading bug. Next.js parses the nonce out of the
+    // `Content-Security-Policy` **request** header. Setting it on the response
+    // alone leaves Next stamping `nonce` on none of its scripts, and because
+    // `'strict-dynamic'` makes browsers ignore `'self'`, every script it emits is
+    // then refused and the page never hydrates.
+    expect(raw).toMatch(/requestHeaders\.set\(\s*['"]Content-Security-Policy['"]/);
+
+    // The old, ineffective mechanism must not return.
+    expect(raw).not.toMatch(/['"]x-csp-nonce['"]/);
+
+    // And the nonce must be random per request, never a constant.
+    expect(raw).toMatch(/crypto\.randomUUID\(\)/);
+  });
 
   it('img-src is an explicit host list, NOT `https:`', () => {
     // A wildcard in `img-src` permits exfiltration to any host, which is the
@@ -230,3 +267,4 @@ describe('the middleware is not a security control, and does not pretend to be',
     expect(matcher).toMatch(/api\|_next/);
   });
 });
+

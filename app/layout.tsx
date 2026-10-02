@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
+import { headers } from 'next/headers';
 
 import '@/app/styles/globals.css';
 import { AppProviders } from '@/components/providers/app-providers';
@@ -41,7 +42,53 @@ export const viewport: Viewport = {
   // NOT user-scalable=no: pinch-zoom must keep working (WCAG 1.4.4).
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  /**
+   * ---------------------------------------------------------------------------
+   * WHY THIS READS `headers()` — AND WHY IT IS NOT OPTIONAL
+   * ---------------------------------------------------------------------------
+   * Two things happen here, and the second is the one that matters.
+   *
+   * 1. It makes the per-request nonce reachable, so any component that must
+   *    render an inline `<script>` can attach `nonce={nonce}` rather than
+   *    pressuring anyone into `'unsafe-inline'`. Nothing needs it today; it is
+   *    here so that adding one has an obvious, safe answer.
+   *
+   * 2. Calling `headers()` opts this layout into DYNAMIC rendering, and that is
+   *    the fix for the page that hung on "Loading…".
+   *
+   *    A per-request nonce cannot be baked into static HTML. Next.js therefore
+   *    prerenders a route at BUILD time when it believes the route is static —
+   *    at which point there is no request, and so no nonce exists. `next start`
+   *    then serves that cached `.html` straight from disk WITHOUT re-rendering,
+   *    while the middleware still attaches a fresh CSP header carrying a fresh
+   *    nonce to the response.
+   *
+   *    The document then contains scripts with NO nonce, the header names a
+   *    nonce that appears nowhere in the document, and — because
+   *    `'strict-dynamic'` makes browsers ignore `'self'` and every host
+   *    allowlist in `script-src` — the entire client bundle is refused. The page
+   *    keeps the server-rendered shell forever: no hydration, permanent spinner.
+   *
+   *    Measured on this build: 9 routes were prerendered to `.next/server/app/<route>.html`
+   *    (`signup`, `dashboard`, `report`, `admin`, …) while `login` was not. The
+   *    prerendered ones loaded with 0 CSP violations in the browser and the
+   *    rendered ones with 47. One `headers()` call removes that entire class of
+   *    bug, because every route is now rendered per request with a nonce that
+   *    genuinely matches its own scripts.
+   *
+   *    The cost is real and worth stating: static generation is off app-wide.
+   *    That is correct for this product — every page is behind authentication
+   *    and per-user — and it is not negotiable while the policy uses nonces.
+   *
+   * The nonce VALUE is not read here: Next.js stamps it onto its own bootstrap
+   * scripts itself, and this app renders no inline `<script>`. Any component
+   * that later needs one reads the same value from the `x-nonce` request
+   * header the middleware sets. What this call must do is mark the tree
+   * dynamic, so it is invoked for that reason alone.
+   */
+  await headers();
+
   return (
     <html lang="en" className={inter.variable} suppressHydrationWarning>
       <body className="min-h-dvh bg-app text-primary antialiased">

@@ -69,19 +69,34 @@ import { NextResponse, type NextRequest } from 'next/server';
  * a WebSocket, and the realtime listeners in docs/11 are half the product.
  *
  * ---------------------------------------------------------------------------
- * WHAT IS PRE-DECLARED FOR PHASE 4 AND PHASE 6, AND WHY
+ * WHY GOOGLE MAPS IS **NOT** IN THIS POLICY
  * ---------------------------------------------------------------------------
- * `https://maps.googleapis.com` and `https://maps.gstatic.com` are already in
- * `script-src`, `img-src`, and `connect-src`; `https://firebasestorage.googleapis.com`
- * is already in `img-src`, `media-src`, and `connect-src`.
+ * An earlier revision of this file pre-declared `maps.googleapis.com` and
+ * `maps.gstatic.com` in `script-src`, `img-src`, `frame-src` and `connect-src`,
+ * on the reasoning that a CSP is enforced against code that does not exist yet
+ * so declaring a host early is free.
  *
- * They are here NOW, unused, for one reason: a CSP is a header a browser
- * enforces against code that does not exist yet, so adding a host when the
- * feature ships means editing a file under deadline while debugging why a
- * signed URL will not render. Declaring them early is free and removes a whole
- * class of Phase 6 problem. See `docs/34_BACKEND_INTEGRATION_POINTS.md` §CSP
- * for the list of what STILL has to be added.
+ * That reasoning was wrong in this case, and the cost was concrete:
+ *   - The browser never loads the Google Maps JavaScript API. Nothing in this
+ *     repository imports it, injects a `<script>` for it, or references
+ *     `window.google`. The only map component, `features/analytics/risk-map.tsx`,
+ *     dynamically imports **Mapbox GL** (`mapbox-gl`), which is bundled by
+ *     webpack and served from our own origin.
+ *   - `services/maps/reverse-geocode.ts` does call the Geocoding REST API, but
+ *     it does so **server-side** through `lib/env.server.ts`. A server-to-server
+ *     fetch is not governed by the browser's CSP, so no directive here can
+ *     enable or block it.
+ *   - With `'strict-dynamic'` present in `script-src`, browsers ignore host
+ *     allowlists in that directive entirely. So the Maps entries in `script-src`
+ *     were not "pre-declared for later" — they were inert text that implied the
+ *     policy had been reviewed for Maps and never was.
  *
+ * `https://maps.googleapis.com` is also removed from `connect-src` because
+ * `https://*.googleapis.com` already matches it; the explicit entry was
+ * redundant. Firebase's own origins are kept and are listed for real.
+ */
+
+/**
  * ---------------------------------------------------------------------------
  * WHY `frame-ancestors 'none'`
  * ---------------------------------------------------------------------------
@@ -93,9 +108,27 @@ function contentSecurityPolicy(nonce: string): string {
 
   const directives = [
     "default-src 'self'",
-    // `strict-dynamic` lets a nonce'd script load the rest of the bundle without
-    // allow-listing every chunk hash, which Next.js cannot provide statically.
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' ${isDev ? "'unsafe-eval'" : ''} https://maps.googleapis.com https://maps.gstatic.com`.trim(),
+    // -------------------------------------------------------------------------
+    // `script-src` — HOW THE NONCE REACHES THE SCRIPTS
+    // -------------------------------------------------------------------------
+    // `'strict-dynamic'` lets a nonce'd script load the rest of the bundle
+    // without allow-listing every chunk hash, which Next.js cannot provide
+    // statically.
+    //
+    // Its cost, which is why this is written down rather than assumed: when a
+    // policy contains `'strict-dynamic'` alongside a nonce or a hash, browsers
+    // **ignore** the host allowlists and `'self'` in this directive. Only scripts
+    // that carry the nonce, and scripts those scripts load, are permitted.
+    //
+    // That is precisely why the nonce has to reach Next.js (see `middleware`).
+    // If it does not, every `<script>` Next emits — the inline flight-data
+    // bootstrap AND the `/_next/static/chunks/<hash>.js` tags — is un-nonced, `'self'`
+    // is ignored, and the entire client bundle is refused. The page keeps
+    // whatever the server rendered, which for this app is the auth loading
+    // state, and so it spins forever.
+    //
+    // No Google Maps origin appears here: no Maps JavaScript API is loaded.
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' ${isDev ? "'unsafe-eval'" : ''}`.trim(),
     // `script-src-attr` blocks inline event handlers (`onclick="..."`), which a
     // nonce cannot cover. React attaches listeners as properties, not attributes,
     // so this breaks nothing in this app.
@@ -107,20 +140,21 @@ function contentSecurityPolicy(nonce: string): string {
     // cannot execute script in any modern browser.
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     // Explicit hosts, not `https:`. An evidence image comes from Firebase
-    // Storage, a marker tile from Maps, and an avatar from Google — and nothing
-    // else has any business being loaded as an image.
-    "img-src 'self' blob: data: https://maps.googleapis.com https://maps.gstatic.com https://*.googleusercontent.com https://firebasestorage.googleapis.com",
+    // Storage and an avatar from Google — and nothing else has any business
+    // being loaded as an image. The Maps origins were removed; see the note
+    // above on why Google Maps is not in this policy at all.
+    "img-src 'self' blob: data: https://*.googleusercontent.com https://firebasestorage.googleapis.com",
     "font-src 'self' data: https://fonts.gstatic.com",
     // A voice report is recorded in the browser and previewed from a blob before
     // upload, so `blob:` is required here and is not a hole: nothing is loaded
     // from it that the app did not just create.
     "media-src 'self' blob: https://firebasestorage.googleapis.com",
-    "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://www.googleapis.com https://firestore.googleapis.com https://firebasestorage.googleapis.com https://maps.googleapis.com",
+    "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://www.googleapis.com https://firestore.googleapis.com https://firebasestorage.googleapis.com",
     // Google sign-in opens a POPUP (a new top-level window, not an iframe), and
     // the Firebase Auth iframe flow is served from the project's own domain.
-    // Both are listed so Phase 2's Google provider keeps working under this
-    // policy; neither is a script source.
-    "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com https://maps.googleapis.com",
+    // Both are listed so the Google provider keeps working under this policy;
+    // neither is a script source.
+    "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com",
     // A Firestore listener and the map both run their work off the main thread.
     "worker-src 'self' blob:",
     "child-src 'self' blob:",
@@ -213,8 +247,11 @@ export function middleware(request: NextRequest) {
 
     'X-Request-Id': request.headers.get('x-request-id') ?? '',
 
-    // Next reads this to nonce its own bootstrap scripts.
-    ...(isDev ? {} : { 'x-csp-nonce': nonce }),
+    // NOTE: `x-csp-nonce` used to be set here, on the RESPONSE, in production
+    // only. It was dead weight twice over — Next.js does not read that header,
+    // and a response header cannot reach the render that emits the scripts it
+    // was meant to authorise. The nonce is delivered on the REQUEST instead;
+    // see below.
   };
 
   // An empty header is worse than no header: some intermediaries treat an empty
@@ -225,7 +262,44 @@ export function middleware(request: NextRequest) {
   if (robots !== null) headers['X-Robots-Tag'] = robots;
 
   const requestHeaders = new Headers(request.headers);
+
+  /**
+   * ---------------------------------------------------------------------------
+   * THE ACTUAL FIX FOR THE STUCK-ON-LOADING PAGE
+   * ---------------------------------------------------------------------------
+   * Next.js discovers a per-request CSP nonce by PARSING THE NONCE OUT OF THE
+   * `Content-Security-Policy` HEADER ON THE REQUEST**. That is the only channel
+   * it reads. `x-nonce` and `x-csp-nonce` are not consulted for script
+   * noncing.
+   *
+   * So this middleware set the policy on the response only, Next never learned
+   * a nonce, and therefore stamped `nonce` on none of its `<script>` elements.
+   * Combined with `'strict-dynamic'` — under which browsers ignore `'self'` and
+   * every host allowlist in `script-src` — the consequence is total: the inline
+   * flight-data bootstrap AND every `/_next/static/chunks/<hash>.js` tag were refused.
+   * No JavaScript ran, React never hydrated, and the page sat on whatever the
+   * server had painted: the auth loading state. Forever.
+   *
+   * Setting the same `csp` string on the request headers makes Next apply the
+   * nonce to its own bootstrap AND to the chunk tags it emits, which is exactly
+   * what `'strict-dynamic'` needs in order to trust the rest of the graph. The
+   * response keeps the same policy so the browser enforces it.
+   *
+   * It is set in development too, deliberately. The previous build sent no
+   * nonce header at all when `NODE_ENV !== 'production'`, which meant the dev
+   * server could never have reproduced this bug locally — the failure only
+   * appeared once deployed. `npm run build && npm start` is the honest test.
+   */
+  requestHeaders.set('Content-Security-Policy', csp);
+
+  /**
+   * Exposed for application code that genuinely must render an inline script,
+   * so it can read the SAME per-request nonce instead of inventing one. Nothing
+   * in this repository currently renders an inline `<script>`; this exists so a
+   * future one has no excuse to reach for `'unsafe-inline'`.
+   */
   requestHeaders.set('x-nonce', nonce);
+
   // Used by the request-id log line so a server log and a browser trace can be
   // joined without threading a value through every function signature.
   requestHeaders.set('x-caregrid-path', request.nextUrl.pathname);
