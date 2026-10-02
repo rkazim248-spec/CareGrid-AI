@@ -7,6 +7,7 @@ import { ChevronLeft, UserPlus } from 'lucide-react';
 
 import { Button, Card, CardContent } from '@/components/ui';
 import { Breadcrumbs, SectionHeader } from '@/components/layout';
+import { DemoDataBadge } from '@/components/feedback';
 import { AssignResponderDialog } from '@/features/dashboard/assign-responder-dialog';
 import { IncidentDetailPanel } from '@/features/dashboard/incident-detail-panel';
 import { IncidentBadgeStrip, IncidentHeader } from '@/features/incidents/incident-header';
@@ -57,7 +58,13 @@ export function IncidentDetailView({ incident }: { incident: Incident }) {
             <CardContent className="pt-4">
               <SectionHeader
                 title="Full record"
-                description="Reports, triage estimate, duplicates, and the recent audit trail for this incident."
+                description={
+                  <span className="flex flex-wrap items-center gap-2">
+                    Reports, triage estimate, duplicates, and the recent audit trail for this
+                    incident.
+                    <DemoDataBadge />
+                  </span>
+                }
               />
               <IncidentDetailPanel
                 className="mt-4"

@@ -4,6 +4,7 @@ import * as React from 'react';
 import { Inbox, UserPlus } from 'lucide-react';
 
 import { PageHeader, LiveIndicator } from '@/components/layout';
+import { DemoDataBadge } from '@/components/feedback';
 import { Alert, AlertDescription, AlertIcon, AlertTitle } from '@/components/ui';
 import { EmptyState, EMPTY_COPY } from '@/components/feedback';
 import { DEMO_NOW } from '@/lib/format';
@@ -55,7 +56,12 @@ export function DispatcherDashboard({ role }: { role: UserRole }) {
       <PageHeader
         title="Dashboard"
         description="Every active incident in the area, most urgent first. Selecting a row opens its full record on the right."
-        meta={<LiveIndicator state="live" asOfIso={DEMO_NOW.toISOString()} />}
+        meta={
+          <span className="flex flex-wrap items-center gap-2">
+            <DemoDataBadge />
+            <LiveIndicator state="live" asOfIso={DEMO_NOW.toISOString()} />
+          </span>
+        }
         actions={[
           {
             label: 'Assign responder',

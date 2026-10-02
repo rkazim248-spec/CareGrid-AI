@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 
 import { Button, Card, CardContent, CardHeader, SwitchField } from '@/components/ui';
 import { PageHeader, SectionHeader } from '@/components/layout';
+import { DemoDataBadge } from '@/components/feedback';
 import { EmptyState, EMPTY_COPY } from '@/components/feedback';
 import { RequiredResourceChips, StatusBadge, UrgencyBadge } from '@/components/domain';
 import { CATEGORY_META, STATUS_META, URGENCY_META } from '@/config';
@@ -88,6 +89,7 @@ export function ResponderDashboard({ userUid }: { userUid: string }) {
       <PageHeader
         title="My work"
         description="Set yourself available, then work the assignments below. One action per assignment."
+        meta={<DemoDataBadge />}
       />
 
       <AvailabilityCard
