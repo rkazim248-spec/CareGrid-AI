@@ -186,7 +186,45 @@ export function getServerEnv() {
 export function allowedOrigins(): Set<string> {
   const appUrl = getServerEnv().appUrl;
   const list = new Set<string>([appUrl, new URL(appUrl).origin]);
+  for (const origin of vercelDeploymentOrigins()) list.add(origin);
   return list;
+}
+
+/**
+ * The origins Vercel serves THIS build from, read from the platform's own
+ * variables.
+ *
+ * `NEXT_PUBLIC_APP_URL` is one static string, but a Vercel project serves the
+ * same build from a production hostname AND a separate hostname per preview
+ * branch. A build that trusts only `NEXT_PUBLIC_APP_URL` therefore rejects every
+ * state-changing request that arrives from a preview deployment, and — when
+ * `NEXT_PUBLIC_APP_URL` still holds a development value such as
+ * `http://localhost:3000`, because it was copied out of a local `.env.local` —
+ * it rejects the PRODUCTION deployment as well. `assertSameOrigin` answers
+ * `CSRF_FAILED`, so `POST /api/me/bootstrap` never creates the profile document
+ * that a brand-new account needs, and the session cannot finish loading.
+ *
+ * These three variables are injected by the platform rather than supplied by us,
+ * and each is stored as an exact origin compared with `Set.has`. There is no
+ * prefix match anywhere here, so this cannot widen the check into the
+ * `'https://app.example.evil.com'.startsWith('https://app.example')` bug class.
+ *
+ * Gated on `VERCEL === '1'` so that a self-hosted deployment never grows
+ * platform-shaped entries it has no way to validate.
+ */
+function vercelDeploymentOrigins(): string[] {
+  if (process.env.VERCEL !== '1') return [];
+  const origins: string[] = [];
+  for (const name of ['VERCEL_PROJECT_PRODUCTION_URL', 'VERCEL_BRANCH_URL', 'VERCEL_URL']) {
+    const value = optionalString(name);
+    if (value === '') continue;
+    try {
+      origins.push(new URL(value.includes('://') ? value : `https://${value}`).origin);
+    } catch {
+      // A malformed platform value is ignored rather than trusted.
+    }
+  }
+  return origins;
 }
 
 /* ========================================================================== */

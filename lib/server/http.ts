@@ -12,7 +12,7 @@ import 'server-only';
 
 import { randomBytes } from 'node:crypto';
 
-import { getServerEnv } from '@/lib/env.server';
+import { allowedOrigins } from '@/lib/env.server';
 import { AppError } from '@/lib/server/errors';
 
 /* ========================================================================== */
@@ -239,7 +239,7 @@ export function assertSameOrigin(req: Request): void {
   const method = req.method.toUpperCase();
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return;
 
-  const allow = allowedOriginSet();
+  const allow = allowedOrigins();
   const origin = req.headers.get('origin');
   const referer = req.headers.get('referer');
 
@@ -263,13 +263,6 @@ export function assertSameOrigin(req: Request): void {
   // them. Not a failure — but it IS recorded, because a browser that omits
   // Origin on a POST is anomalous and worth knowing about.
   return;
-}
-
-function allowedOriginSet(): Set<string> {
-  // Imported lazily to keep the module-level `server-only` guard first and to
-  // avoid a cycle: env.server does not import this file.
-  const appUrl = getServerEnv().appUrl;
-  return new Set([appUrl, new URL(appUrl).origin]);
 }
 
 /* ========================================================================== */
