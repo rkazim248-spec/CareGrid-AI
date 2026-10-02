@@ -420,12 +420,26 @@ service firebase.firestore {
      * for which the condition would be true. An administrator who cannot delete
      * an audit entry is the whole point: the log has to be worth something to
      * the person it is most likely to be used against.
+     *
+     * `create` is DENIED for the same reason, and this was a real defect until
+     * Phase 15 item 6. It read `allow create: if isSignedIn();` — which permitted
+     * ANY authenticated user to append to the audit log.
+     *
+     * That permission had no legitimate user. Every audit write in this codebase
+     * goes through `lib/server/audit.ts`, which uses the Admin SDK and therefore
+     * bypasses client rules entirely; the only client-side reference is the
+     * admin read view. So the clause granted nothing and cost the log its
+     * integrity: a citizen holding a valid session could append an entry
+     * attributing a role change or an account suspension to somebody else, and a
+     * reader could not distinguish it from a server-written one.
+     *
+     * An append-only log that anyone may append to is not append-only. It is
+     * worse than no log, because it is trusted.
      */
     match /auditLogs/{logId} {
       allow read: if isDispatch();
       allow list: if isDispatch();
-      allow create: if isSignedIn();
-      allow update, delete: if false;
+      allow write: if false;
     }
 
     match /analyticsDaily/{day} {

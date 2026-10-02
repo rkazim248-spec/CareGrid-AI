@@ -17,7 +17,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "security:check": "node scripts/security-check.cjs",
-    "verify": "npm run typecheck && npm run lint && npm run test && npm run security:check && npm run build"
+    "secrets:scan": "node scripts/secret-scan.cjs",
+    "verify": "npm run typecheck && npm run lint && npm run test && npm run security:check && npm run secrets:scan && npm run build"
   },
   "dependencies": {
     "@google/genai": "^2.24.0",

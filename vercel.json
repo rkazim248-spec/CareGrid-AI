@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+
+  "//buildCommand": "npm run verify, NOT `npm run build`. verify is typecheck && lint && test && security:check && build, so a Vercel build runs the same gate CI does and ends by invoking `next build` itself. That means tests run once and `.next` is produced by the last step, with no double build. The cost is a slower deploy (~3-4 min); the benefit is that a failing test or a secret-tracking problem cannot reach production, which is the whole reason this file exists. Security:check FAILS CLOSED when git is absent - Vercel clones the repository so git is present, and if it ever is not, the deploy stops rather than proceeding on an unverified secret control.",
+  "buildCommand": "npm run verify",
+
+  "//installCommand": "`npm ci`, not `npm install`. ci installs exactly package-lock.json and fails if the lockfile is out of sync with package.json. `npm install` would silently resolve newer versions inside the ranges in package.json, so two deploys of the same commit could ship different code - and a lockfile-only security fix would not reliably reach production.",
+  "installCommand": "npm ci",
+
+  "//securityHeaders": "Deliberately ABSENT. middleware.ts already emits the CSP, HSTS, X-Frame-Options, Referrer-Policy and Permissions-Policy for every response, and tests/unit/api/security-headers.test.ts asserts it. Declaring the same headers here would create two sources of truth for one control, and the copy in this file is the one nobody tests. If a header must be added, add it to middleware.ts.",
+  "headers": [],
+
+  "//why_no_regions": "No `regions` pin. Every server route is a short stateless call, and Firestore/Gemini/ImageKit/AssemblyAI are all reached over the public internet, so pinning a region would only add latency to the provider calls without making Firestore closer. Revisit if a provider later offers a regional endpoint that must be co-located."
+}

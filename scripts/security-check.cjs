@@ -240,6 +240,46 @@ const ignored = /^\.env\*?\.local/m.test(gitignore) || /^\.env$/m.test(gitignore
  * nothing is the invariant itself. The companion "git-ignored" check above is kept,
  * because that is what stops an untracked file being added by accident.
  */
+/**
+ * Is git available at all?
+ *
+ * PHASE 16. Both git helpers below used to swallow every error and return a
+ * value, which meant a machine with no `git` on PATH produced two opposite lies:
+ *
+ *   - `gitIgnores()` returned `false` ("not ignored") for all eight names, so the
+ *     coverage check FAILED while asserting "not ignored: .env, .env.local, ..."
+ *     — a claim about this repository that was never verified.
+ *   - `isTrackedByGit()` ALSO returned `false` ("not tracked"), so
+ *     `.env.local is not committed to git` PASSED VACUOUSLY, and the
+ *     "wrongly ignored" check passed vacuously too.
+ *
+ * The second is the dangerous one. A security gate that cannot run must FAIL, not
+ * pass: a developer without git — or a CI image that dropped it — was told the
+ * repository's most important secret control had been verified when nothing had
+ * been checked at all.
+ *
+ * Probed once, here, before either helper can be called.
+ */
+function gitAvailable() {
+  try {
+    execFileSync('git', ['--version'], { cwd: ROOT, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const HAS_GIT = gitAvailable();
+
+/**
+ * Is this path tracked by git?
+ *
+ * Returns `null` when the question could NOT be asked (git missing), which the
+ * caller must treat as "unverified" rather than as "no". It used to return
+ * `false` on every error, which turned an absent `git` executable into a green
+ * "not committed" result — a vacuous pass on the single most important secret
+ * control in the repository.
+ */
 function isTrackedByGit(relativePath) {
   try {
     const listed = execFileSync('git', ['ls-files', '--error-unmatch', relativePath], {
@@ -247,10 +287,13 @@ function isTrackedByGit(relativePath) {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     return listed.trim().length > 0;
-  } catch {
-    // `--error-unmatch` exits non-zero when the path is NOT tracked, which is the
-    // answer we want.
-    return false;
+  } catch (error) {
+    if (HAS_GIT && error && error.status === 1) {
+      // `--error-unmatch` exits non-zero when the path is NOT tracked, which is
+      // the answer we want.
+      return false;
+    }
+    return null;
   }
 }
 
@@ -259,12 +302,14 @@ const localTracked = localExists ? isTrackedByGit('.env.local') : false;
 check('.env.local is git-ignored', ignored);
 check(
   '.env.local is not committed to git',
-  !localTracked,
-  localTracked
-    ? '.env.local is TRACKED by git — every credential in it is now in the object store and must be rotated'
-    : localExists
-      ? 'ok — .env.local exists locally and is untracked (the correct state when working with real credentials)'
-      : '',
+  localTracked === false,
+  localTracked === null
+    ? 'could not be determined — git is unavailable, so this is UNVERIFIED rather than "safe"'
+    : localTracked
+      ? '.env.local is TRACKED by git — every credential in it is now in the object store and must be rotated'
+      : localExists
+        ? 'ok — .env.local exists locally and is untracked (the correct state when working with real credentials)'
+        : '',
 );
 
 /**
@@ -273,6 +318,12 @@ check(
  * A second, independent assertion on top of the git ones, because the whole harm of
  * a committed secret file is that it travels. If the file is untracked AND ignored,
  * it cannot be in a commit, a tarball of the tree, or a CI checkout.
+ *
+ * `ls-files` throws when git is missing OR when this is not a repository. The old
+ * `catch { return true }` made BOTH cases report a clean result, so the check was
+ * green precisely when it had verified nothing. It now fails closed, and the
+ * companion check above carries the actionable message so an operator is told to
+ * install git rather than left guessing which of two failures they have.
  */
 check(
   '.env.local is excluded from the tracked file set',
@@ -281,9 +332,7 @@ check(
       const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       return !tracked.split(/\r?\n/).some((line) => /^\.env(\.|$)/.test(line.trim()) && !line.includes('.example'));
     } catch {
-      // Outside a git repo the ignore check above is the only available signal, and
-      // it is not weakened by this returning true.
-      return true;
+      return false;
     }
   })(),
 );
@@ -322,6 +371,45 @@ const MUST_IGNORE = [
 /** Must stay COMMITTED — an ignored example defeats the purpose of an example. */
 const MUST_COMMIT = ['.env.example', '.env.production.example'];
 
+/*
+ * `HAS_GIT` and `gitAvailable()` are declared near the top of the .env section,
+ * above their first use — see the comment there for why availability is probed
+ * once and what a missing git used to hide.
+ */
+
+/**
+ * `.gitignore` content assertion — no git required.
+ *
+ * This does NOT reimplement gitignore semantics (a hand-rolled matcher eventually
+ * disagrees with git, which the file header already calls out). It asserts the
+ * narrower thing that is unambiguous by inspection: that a rule ignoring the whole
+ * `.env*` family exists, and that a later negation re-admits the examples. When
+ * git IS available the authoritative `check-ignore` results below stand on their
+ * own; this is the fallback that keeps the check from being silent on a machine
+ * that cannot answer the question.
+ */
+function gitignoreCoversEnvFamily() {
+  if (!existsSync(join(ROOT, '.gitignore'))) return { ok: false, detail: '.gitignore does not exist' };
+  const lines = readFileSync(join(ROOT, '.gitignore'), 'utf8')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('#'));
+
+  const ignoresFamily = lines.some((l) => l === '.env' || l === '.env.*' || l === '.env*');
+  const readmitsExamples = lines.some((l) => l.startsWith('!') && l.includes('.example'));
+  return {
+    ok: ignoresFamily && readmitsExamples,
+    detail: `ignores the .env family: ${ignoresFamily}; re-admits examples: ${readmitsExamples}`,
+  };
+}
+
+/**
+ * `git check-ignore -q` for one name.
+ *
+ * Exit 1 is an ANSWER ("not ignored"). Anything else — including a missing
+ * executable — is a FAILURE TO ASK, and is reported as such rather than
+ * collapsed into "not ignored".
+ */
 function gitIgnores(name) {
   try {
     execFileSync('git', ['check-ignore', '-q', '--no-index', name], {
@@ -329,24 +417,41 @@ function gitIgnores(name) {
       stdio: 'ignore',
     });
     return true;
-  } catch {
-    // Exit 1 means "not ignored", which is an answer rather than a failure.
-    return false;
+  } catch (error) {
+    if (error && error.status === 1) return false;
+    throw error;
   }
 }
 
-const notIgnored = MUST_IGNORE.filter((name) => !gitIgnores(name));
-const wronglyIgnored = MUST_COMMIT.filter((name) => gitIgnores(name));
-check(
-  'Every .env filename is git-ignored, including the ones without a .local suffix',
-  notIgnored.length === 0,
-  `not ignored: ${notIgnored.join(', ')}`,
-);
-check(
-  '.env.example stays committable (an ignored example is a useless example)',
-  wronglyIgnored.length === 0,
-  `wrongly ignored: ${wronglyIgnored.join(', ')}`,
-);
+if (HAS_GIT) {
+  const notIgnored = MUST_IGNORE.filter((name) => !gitIgnores(name));
+  const wronglyIgnored = MUST_COMMIT.filter((name) => gitIgnores(name));
+  check(
+    'Every .env filename is git-ignored, including the ones without a .local suffix',
+    notIgnored.length === 0,
+    `not ignored: ${notIgnored.join(', ')}`,
+  );
+  check(
+    '.env.example stays committable (an ignored example is a useless example)',
+    wronglyIgnored.length === 0,
+    `wrongly ignored: ${wronglyIgnored.join(', ')}`,
+  );
+} else {
+  const content = gitignoreCoversEnvFamily();
+  check(
+    '.gitignore ignores the whole .env family and re-admits the examples (content check; git unavailable)',
+    content.ok,
+    content.detail,
+  );
+  check(
+    'Ignore and tracking status are actually verifiable (git must be installed)',
+    false,
+    'git is not on PATH, so `git check-ignore` and `git ls-files` could not be run. This check ' +
+      'fails closed on purpose: reporting "not ignored" or "not tracked" without asking git would be ' +
+      'an unverified claim about the one control that protects every production secret. Install git ' +
+      '(https://git-scm.com/downloads) or run this in CI, where git is present.',
+  );
+}
 
 /**
  * NO CREDENTIAL-CLASS VARIABLE IS POPULATED IN `.env.example`.
@@ -635,7 +740,7 @@ check(
 );
 check(
   'auditLogs is append-only',
-  /match \/auditLogs[\s\S]*?allow update, delete: if false;/.test(rules),
+  /match \/auditLogs[\s\S]*?allow write: if false;/.test(rules),
 );
 check(
   'responders cannot self-write `verification`',
@@ -3647,7 +3752,7 @@ check(
  */
 const auditRule = read('firestore.rules');
 const auditBlockDeclared = auditRule.includes('match /auditLogs/');
-const auditRefusesRewrite = /match \/auditLogs\/[\s\S]{0,700}?allow update, delete: if false;/.test(auditRule);
+const auditRefusesRewrite = /match \/auditLogs\/[\s\S]{0,700}?allow write: if false;/.test(auditRule);
 const auditAppendOnly = auditBlockDeclared && auditRefusesRewrite;
 check(
   'auditLogs is append-only: update and delete are refused to every role (brief §28)',

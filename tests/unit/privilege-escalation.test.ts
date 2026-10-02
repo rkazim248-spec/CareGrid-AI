@@ -222,10 +222,21 @@ describe('step 6: firestore.rules denies every client write to users', () => {
     expect(body).toMatch(/allow\s+create\s*,\s*update\s*,\s*delete\s*:\s*if\s+false/);
   });
 
-  it('auditLogs denies update and delete with no condition at all', () => {
+  it('auditLogs denies every client write, including create', () => {
     const block = rules.match(/match \/auditLogs\/\{logId\}[^{]*\{([\s\S]*?)\n    \}/);
     expect(block, 'firestore.rules must contain a `match /auditLogs/{logId}` block').not.toBeNull();
-    expect(String(block?.[1] ?? '')).toMatch(/allow\s+update\s*,\s*delete\s*:\s*if\s+false/);
+    const body = String(block?.[1] ?? '');
+
+    // Audit writes go through the Admin SDK in `lib/server/audit.ts`, which
+    // bypasses these rules entirely. So the client needs NO write path at all.
+    //
+    // This previously asserted the literal text `allow update, delete: if false`,
+    // which left `allow create: if isSignedIn()` in place — letting any signed-in
+    // user forge an audit entry. `allow write: if false` closes create as well as
+    // update and delete, so the assertion is on the STRENGTHENED form.
+    expect(body).toMatch(/allow\s+write\s*:\s*if\s+false/);
+    expect(body, 'no client `create` may be permitted on auditLogs').not.toMatch(/allow\s+create\s*:\s*if\s+(?!false)/);
+    expect(body, 'auditLogs must still be dispatch-readable').toMatch(/allow\s+read\s*:\s*if\s+isDispatch\(\)/);
   });
 
   it('responders cannot write their own `verification` field', () => {
