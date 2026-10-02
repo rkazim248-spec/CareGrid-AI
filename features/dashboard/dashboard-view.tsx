@@ -2,7 +2,9 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { ArrowUpRight, MapPin, Siren } from 'lucide-react';
+import type { Route } from 'next';
+import { Activity, ArrowUpRight, Bell, ClipboardList, Map, MapPin, Siren } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import type { z } from 'zod';
 
 import { ErrorState, EmptyState } from '@/components/feedback';
@@ -10,6 +12,8 @@ import { RoleBadge, StatusBadge, Timestamp, UrgencyBadge } from '@/components/do
 import { Button, Card, CardContent } from '@/components/ui';
 import { listIncidents } from '@/lib/api/client';
 import { useSession } from '@/components/providers/session-provider';
+import { useRealtimeNotifications } from '@/features/notifications/use-realtime-notifications';
+import { MyReportCard } from '@/features/incidents/my-report-card';
 import type { incidentListResponseSchema } from '@/validators/incident';
 
 type IncidentRow = z.infer<typeof incidentListResponseSchema>['items'][number];
@@ -17,6 +21,7 @@ type IncidentList = z.infer<typeof incidentListResponseSchema>;
 
 export function DashboardView() {
   const { user, role } = useSession();
+  const notifications = useRealtimeNotifications();
   const [items, setItems] = React.useState<readonly IncidentRow[]>([]);
   const [scope, setScope] = React.useState<IncidentList['scope'] | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -45,40 +50,125 @@ export function DashboardView() {
 
   if (user === null || role === null) return null;
 
-  const displayName = user.displayName?.trim() || 'Your account';
+  const terminal = new Set(['resolved', 'closed', 'cancelled', 'false_alarm', 'merged']);
+  const activeItems = items.filter((item) => !terminal.has(item.status));
+  const activeCount = activeItems.length;
+  const resolvedCount = items.filter((item) => item.status === 'resolved' || item.status === 'closed').length;
+  const pendingCount = items.filter((item) => item.status === 'new').length;
+  const notificationValue = notifications.error
+    ? 'Unavailable'
+    : notifications.hasReceivedSnapshot
+      ? String(notifications.unreadCount)
+      : 'Loading';
+  const overview = [
+    { label: 'Active reports', value: loading ? 'Loading' : failed ? 'Unavailable' : String(activeCount), detail: 'In the latest reports', icon: Activity },
+    { label: 'Resolved reports', value: loading ? 'Loading' : failed ? 'Unavailable' : String(resolvedCount), detail: 'In the latest reports', icon: ClipboardList },
+    { label: 'Pending reports', value: loading ? 'Loading' : failed ? 'Unavailable' : String(pendingCount), detail: 'Awaiting review', icon: Siren },
+    { label: 'Community activity', value: notificationValue, detail: 'Unread updates in your feed', icon: Bell },
+  ];
 
   return (
-    <div className="flex flex-col gap-7">
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div className="flex flex-col gap-2">
-          <RoleBadge role={role} size="sm" />
+    <div className="flex flex-col gap-8">
+      <header className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-2">
+          <p className="text-sm font-semibold text-accent">CareGrid AI</p>
           <h1 className="text-balance text-3xl leading-tight font-semibold tracking-tight text-primary sm:text-4xl">
-            Welcome, {displayName}
+            Good to see you.
           </h1>
-          <p className="max-w-[65ch] text-sm leading-6 text-secondary">
-            Your account and the reports you are permitted to view, refreshed from CareGrid.
+          <p className="max-w-[65ch] text-base leading-7 text-secondary">
+            Monitor your reports and respond when your community needs help.
           </p>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+            <span className="max-w-full truncate">{user.email}</span>
+            <span aria-hidden="true" className="hidden size-1 rounded-full bg-default sm:inline-block" />
+            <RoleBadge role={role} size="sm" />
+          </div>
         </div>
-        <Button asChild size="lg" className="min-h-12 self-start">
+        <Button asChild size="lg" className="min-h-12 w-full sm:w-auto">
           <Link href="/report">
             <Siren aria-hidden="true" />
-            Report an emergency
+            Report an Emergency
           </Link>
         </Button>
       </header>
 
-      <Card>
-        <CardContent className="grid gap-4 pt-4 sm:grid-cols-2">
-          <div className="min-w-0">
-            <p className="text-xs font-medium text-muted">Signed in as</p>
-            <p className="mt-1 truncate text-sm font-medium text-primary">{user.email}</p>
-          </div>
+      <section aria-label="Report overview">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-lg font-semibold text-primary">Your response overview</h2>
+          <p className="text-xs text-muted">Counts reflect the latest 6 reports shown below.</p>
+        </div>
+        <ul className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {overview.map((metric) => {
+            const Icon = metric.icon;
+            return (
+              <li key={metric.label} className="min-w-0 rounded-card border border-subtle bg-surface p-4 sm:p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-sm font-medium text-secondary">{metric.label}</p>
+                  <span className="flex size-9 shrink-0 items-center justify-center rounded-control bg-accent-muted text-accent">
+                    <Icon className="size-4" aria-hidden="true" />
+                  </span>
+                </div>
+                <p className="mt-4 break-words text-2xl font-semibold tracking-tight text-primary tabular-nums">
+                  {metric.value}
+                </p>
+                <p className="mt-1 text-xs text-muted">{metric.detail}</p>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+
+      <section aria-labelledby="dashboard-active-title" className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
           <div>
-            <p className="text-xs font-medium text-muted">Account type</p>
-            <p className="mt-1 text-sm font-medium capitalize text-primary">{role}</p>
+            <h2 id="dashboard-active-title" className="text-xl font-semibold text-primary">
+              Active emergencies
+            </h2>
+            <p className="mt-1 text-sm text-secondary">Open reports from the latest six incidents.</p>
           </div>
-        </CardContent>
-      </Card>
+          <Button variant="ghost" size="sm" asChild>
+            <Link href="/incidents">
+              View all reports
+              <ArrowUpRight aria-hidden="true" />
+            </Link>
+          </Button>
+        </div>
+
+        {loading ? (
+          <ul className="flex flex-col gap-3" aria-label="Loading active incidents">
+            {[0, 1].map((index) => <li key={index} className="skeleton-fill h-24 rounded-card" />)}
+          </ul>
+        ) : failed ? (
+          <p role="alert" className="rounded-card border border-danger/30 bg-danger-muted px-4 py-3 text-sm text-danger-fg-muted">
+            Active incidents could not be loaded. Use the retry control in Recent reports.
+          </p>
+        ) : activeItems.length === 0 ? (
+          <EmptyState
+            icon={Activity}
+            title="No active emergencies"
+            description="No open incidents are present in the latest reports available to your account."
+          />
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {activeItems.slice(0, 3).map((incident) => (
+              <MyReportCard key={incident.incidentId} incident={incident} />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section aria-labelledby="dashboard-actions-title">
+        <h2 id="dashboard-actions-title" className="mb-3 text-lg font-semibold text-primary">Quick actions</h2>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <QuickAction href="/report" icon={Siren} label="Report an emergency" detail="Share a new incident report" />
+          <QuickAction href="/incidents" icon={ClipboardList} label="My reports" detail="Review saved incident details" />
+          {role !== 'citizen' ? (
+            <QuickAction href="/map" icon={Map} label="View map" detail="Review incidents by location" />
+          ) : (
+            <QuickAction href="/notifications" icon={Bell} label="Notifications" detail="See recent report updates" />
+          )}
+        </div>
+      </section>
 
       <section aria-labelledby="dashboard-reports-title" className="flex flex-col gap-4">
         <div className="flex flex-wrap items-end justify-between gap-3">
@@ -135,7 +225,7 @@ export function DashboardView() {
                           <StatusBadge status={incident.status} size="sm" />
                           <UrgencyBadge urgency={incident.urgency} size="sm" />
                         </div>
-                        <p className="clamp-2 max-w-[72ch] text-sm text-secondary">
+                        <p className="clamp-2 max-w-[72ch] text-sm leading-6 text-secondary">
                           {incident.summary}
                         </p>
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
@@ -158,5 +248,33 @@ export function DashboardView() {
         )}
       </section>
     </div>
+  );
+}
+
+function QuickAction({
+  href,
+  icon: Icon,
+  label,
+  detail,
+}: {
+  href: Route;
+  icon: LucideIcon;
+  label: string;
+  detail: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group flex min-h-[76px] items-center gap-3 rounded-card border border-subtle bg-surface px-4 py-3 transition-[border-color,background-color,transform] duration-200 ease-out hover:-translate-y-px hover:border-selected hover:bg-elevated focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-focus"
+    >
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-control bg-accent-muted text-accent">
+        <Icon className="size-5" aria-hidden="true" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-semibold text-primary">{label}</span>
+        <span className="mt-1 block text-xs leading-5 text-secondary">{detail}</span>
+      </span>
+      <ArrowUpRight className="size-4 shrink-0 text-muted transition-transform duration-200 ease-out group-hover:-translate-y-0.5 group-hover:translate-x-0.5" aria-hidden="true" />
+    </Link>
   );
 }

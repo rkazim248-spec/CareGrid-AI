@@ -14,9 +14,11 @@ export const SETTINGS_COPY = {
   description:
     'Preferences for this account. Notifications and appearance are stored in this browser only.',
 
+  accountTab: 'Account',
   notificationsTab: 'Notifications',
   displayTab: 'Display',
   privacyTab: 'Privacy',
+  securityTab: 'Security',
 
   newIncidentToast: 'New incident toast',
   newIncidentToastHelp: 'Show a quiet banner when a new incident arrives. No sound is ever played.',

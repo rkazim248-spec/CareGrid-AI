@@ -14,7 +14,7 @@ import type { incidentListResponseSchema } from '@/validators/incident';
 
 type IncidentRow = z.infer<typeof incidentListResponseSchema>['items'][number];
 
-export function MyReportsList() {
+export function MyReportsList({ searchLabel }: { searchLabel?: string } = {}) {
   const [items, setItems] = React.useState<readonly IncidentRow[]>([]);
   const [hasMore, setHasMore] = React.useState(false);
   const [nextCursor, setNextCursor] = React.useState<string | null>(null);
@@ -85,6 +85,7 @@ export function MyReportsList() {
         onQueryChange={setQuery}
         status={status}
         onStatusChange={setStatus}
+        searchLabel={searchLabel}
       />
 
       {loading ? (

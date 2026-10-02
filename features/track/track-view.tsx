@@ -1,41 +1,70 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import { Search } from 'lucide-react';
 
-import { Alert, AlertDescription, AlertIcon, AlertTitle, Button, Input } from '@/components/ui';
-import { NotFoundState } from '@/components/feedback';
-import { MOCK_INCIDENTS } from '@/lib/mock-data';
+import { Button, Input } from '@/components/ui';
+import { ErrorState, NotFoundState } from '@/components/feedback';
+import { IncidentDetailRecord } from '@/features/incidents/incident-detail-record';
+import { listIncidents } from '@/lib/api/client';
+import { isApiError } from '@/lib/api/errors';
 import { TRACK_COPY } from '@/features/track/track-copy';
-import { TrackIncidentCard } from '@/features/track/track-incident-card';
+import type { z } from 'zod';
+import type { incidentListResponseSchema } from '@/validators/incident';
 
-/**
- * /track — docs/04_UI_UX_DESIGN_SPECIFICATION.md §13.3.
- *
- * Reads `?ref=` and, when none is given, falls back to the demo reference so
- * the route is never a blank screen. The sample is announced in visible text,
- * because a page full of plausible incident data with no provenance marker is
- * exactly how a demo gets mistaken for a live system (docs/04 §15.5).
- *
- * An unknown reference and a reference the caller may not see produce the SAME
- * `NotFoundState variant="reference"`. Two different messages would turn the
- * page into an existence oracle (US-005 AC4).
- */
-const DEMO_REFERENCE = 'CG-7QK4M2';
+type IncidentRow = z.infer<typeof incidentListResponseSchema>['items'][number];
 
 function normalise(value: string): string {
   return value.trim().toUpperCase();
 }
 
 export function TrackView({ requestedRef }: { requestedRef: string | undefined }) {
-  const fromUrl = requestedRef ? normalise(requestedRef) : null;
-  const [query, setQuery] = React.useState(fromUrl ?? DEMO_REFERENCE);
-  const [activeRef, setActiveRef] = React.useState<string | null>(fromUrl);
+  const initialRef = requestedRef ? normalise(requestedRef) : '';
+  const [query, setQuery] = React.useState(initialRef);
+  const [activeRef, setActiveRef] = React.useState(initialRef);
+  const [incident, setIncident] = React.useState<IncidentRow | null>(null);
+  const [notFound, setNotFound] = React.useState(false);
+  const [moreAvailable, setMoreAvailable] = React.useState(false);
+  const [loading, setLoading] = React.useState(Boolean(initialRef));
+  const [error, setError] = React.useState<string | null>(null);
+  const [reload, setReload] = React.useState(0);
 
-  // No reference in the URL: show the sample and say so.
-  const usingSample = activeRef === null;
-  const shownRef = usingSample ? DEMO_REFERENCE : activeRef;
-  const incident = MOCK_INCIDENTS.find((entry) => entry.reference === shownRef);
+  React.useEffect(() => {
+    if (!activeRef) {
+      setIncident(null);
+      setNotFound(false);
+      setMoreAvailable(false);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setLoading(true);
+    setIncident(null);
+    setNotFound(false);
+    setMoreAvailable(false);
+    setError(null);
+
+    void listIncidents({ limit: '100' }, { signal: controller.signal })
+      .then((result) => {
+        const match = result.items.find((entry) => normalise(entry.reference) === activeRef);
+        setIncident(match ?? null);
+        setNotFound(match === undefined);
+        setMoreAvailable(match === undefined && result.page.hasMore);
+      })
+      .catch((caught: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(isApiError(caught) ? caught.code : 'NETWORK');
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [activeRef, reload]);
 
   const lookUp = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -46,7 +75,7 @@ export function TrackView({ requestedRef }: { requestedRef: string | undefined }
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl leading-tight font-bold text-primary">{TRACK_COPY.title}</h1>
-        <p className="max-w-[72ch] text-sm text-secondary">{TRACK_COPY.description}</p>
+        <p className="max-w-[72ch] text-sm leading-6 text-secondary">{TRACK_COPY.description}</p>
       </div>
 
       <form noValidate onSubmit={lookUp} className="flex flex-col gap-2 sm:flex-row sm:items-end">
@@ -55,15 +84,14 @@ export function TrackView({ requestedRef }: { requestedRef: string | undefined }
             id="track-reference"
             label={TRACK_COPY.referenceLabel}
             mono
-            className="h-12 md:h-10"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             helperText={TRACK_COPY.referenceHelper}
             autoComplete="off"
             inputMode="text"
             spellCheck={false}
-            maxLength={12}
-            placeholder={DEMO_REFERENCE}
+            maxLength={32}
+            placeholder="CG-..."
           />
         </div>
         <Button type="submit" variant="primary" size="lg" className="w-full shrink-0 sm:w-auto">
@@ -72,34 +100,42 @@ export function TrackView({ requestedRef }: { requestedRef: string | undefined }
         </Button>
       </form>
 
-      <Alert tone="neutral">
-        <AlertIcon tone="neutral" />
-        <div className="flex min-w-0 flex-col gap-1">
-          <AlertTitle>Sample data</AlertTitle>
-          <AlertDescription>
-            {usingSample ? TRACK_COPY.sampleNotice : TRACK_COPY.sampleNoticeFor(shownRef)}
-          </AlertDescription>
+      {loading ? (
+        <div className="flex flex-col gap-3" role="status" aria-live="polite">
+          <span className="sr-only">Looking for your saved report</span>
+          <div className="skeleton-fill h-8 w-56 rounded-sm" />
+          <div className="skeleton-fill h-48 rounded-card" />
         </div>
-      </Alert>
-
-      {incident ? (
-        <div className="flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1fr)_240px] lg:items-start lg:gap-6">
-          <TrackIncidentCard incident={incident} />
-          <aside className="hidden lg:sticky lg:top-20 lg:block">
-            <Alert tone="info">
-              <AlertIcon tone="info" />
-              <div className="flex min-w-0 flex-col gap-1">
-                <AlertTitle>Who can see this</AlertTitle>
-                <AlertDescription>
-                  Dispatchers and the assigned responder can see this report. Responders cannot see
-                  your name.
-                </AlertDescription>
-              </div>
-            </Alert>
-          </aside>
+      ) : error !== null ? (
+        <ErrorState
+          title="We could not look up this report"
+          description="Check your connection and retry. Your report has not been changed."
+          code={error}
+          onRetry={() => setReload((value) => value + 1)}
+        />
+      ) : incident ? (
+        <IncidentDetailRecord incidentId={incident.incidentId} />
+      ) : notFound ? (
+        <div className="flex flex-col gap-4">
+          <NotFoundState variant="reference" />
+          {moreAvailable ? (
+            <p className="text-sm text-secondary">
+              The reference was not in the latest 100 reports.{' '}
+              <Link href="/incidents" className="font-medium text-accent underline-offset-4 hover:underline">
+                Browse all reports
+              </Link>
+              {' '}to continue through older records.
+            </p>
+          ) : null}
         </div>
       ) : (
-        <NotFoundState variant="reference" />
+        <p className="rounded-card border border-subtle bg-surface px-4 py-5 text-sm text-secondary">
+          Enter the reference from a saved report. You can also browse your reports directly.
+          {' '}
+          <Link href="/incidents" className="font-medium text-accent underline-offset-4 hover:underline">
+            Open reports
+          </Link>
+        </p>
       )}
     </div>
   );

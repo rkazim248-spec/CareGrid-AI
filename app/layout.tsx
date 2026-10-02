@@ -1,30 +1,13 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter } from 'next/font/google';
 import { headers } from 'next/headers';
 
 import '@/app/styles/globals.css';
 import { AppProviders } from '@/components/providers/app-providers';
 
-/**
- * Inter Variable via next/font. Self-hosted, preloaded, with a metric-adjusted
- * fallback so the swap does not cause a layout shift (docs/04 §3.1).
- *
- * The MONO stack is deliberately the SYSTEM mono stack, not a second web font:
- * a reference like `CG-7QK4M2` needs 14 characters of monospace, and a ~30 KB
- * web font to render them would be the single worst bundle decision available
- * here (docs/04 §3.1).
- */
-const inter = Inter({
-  subsets: ['latin'],
-  display: 'swap',
-  variable: '--font-inter',
-  preload: true,
-});
-
 export const metadata: Metadata = {
   title: {
     default: 'CareGrid AI',
-    template: '%s · CareGrid AI',
+    template: '%s | CareGrid AI',
   },
   description:
     'CareGrid AI turns an unstructured community incident report into a located, deduplicated incident that a dispatcher and a verified community responder can act on.',
@@ -34,8 +17,8 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: '(prefers-color-scheme: dark)', color: '#0B0F14' },
-    { media: '(prefers-color-scheme: light)', color: '#F6F8FA' },
+    { media: '(prefers-color-scheme: dark)', color: '#0B1220' },
+    { media: '(prefers-color-scheme: light)', color: '#F5F7FB' },
   ],
   width: 'device-width',
   initialScale: 1,
@@ -90,7 +73,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   await headers();
 
   return (
-    <html lang="en" className={inter.variable} suppressHydrationWarning>
+    <html lang="en" className="light" suppressHydrationWarning>
       <body className="min-h-dvh bg-app text-primary antialiased">
         <AppProviders>
           {/* The skip link is the FIRST focusable element in the document

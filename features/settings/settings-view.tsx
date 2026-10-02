@@ -1,6 +1,7 @@
 'use client';
 
 import * as React from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
 
@@ -30,6 +31,7 @@ import { useTheme } from '@/components/providers/theme-provider';
 import { notificationChannels, type NotificationChannelReport } from '@/lib/api/client';
 import { RetentionTable } from '@/features/settings/retention-table';
 import { SETTINGS_COPY } from '@/features/settings/settings-copy';
+import { useResolvedSession } from '@/components/providers/session-provider';
 
 /**
  * /settings — docs/04 §13.16.
@@ -44,24 +46,27 @@ import { SETTINGS_COPY } from '@/features/settings/settings-copy';
  * for them, so a cross-device preference is not possible yet (docs/04 §16 D9).
  */
 const TABS = [
+  { value: 'account', label: SETTINGS_COPY.accountTab },
   { value: 'notifications', label: SETTINGS_COPY.notificationsTab },
   { value: 'display', label: SETTINGS_COPY.displayTab },
   { value: 'privacy', label: SETTINGS_COPY.privacyTab },
+  { value: 'security', label: SETTINGS_COPY.securityTab },
 ] as const;
 
 type TabValue = (typeof TABS)[number]['value'];
 
 function isTabValue(value: string | null): value is TabValue {
-  return value === 'notifications' || value === 'display' || value === 'privacy';
+  return value === 'account' || value === 'notifications' || value === 'display' || value === 'privacy' || value === 'security';
 }
 
 export function SettingsView() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const theme = useTheme();
+  const { user, signOut } = useResolvedSession();
 
   const requested = searchParams.get('tab');
-  const active: TabValue = isTabValue(requested) ? requested : 'notifications';
+  const active: TabValue = isTabValue(requested) ? requested : 'account';
 
   const setTab = React.useCallback(
     (value: string) => {
@@ -126,6 +131,37 @@ export function SettingsView() {
             </TabsTrigger>
           ))}
         </TabsList>
+
+        <TabsContent value="account" className="mt-4">
+          <Card>
+            <CardHeader>
+              <h3 className="text-base font-semibold text-primary">{SETTINGS_COPY.accountTab}</h3>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-5">
+              <dl className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs font-medium text-muted">Display name</dt>
+                  <dd className="mt-1 break-words text-sm text-primary">{user?.displayName || 'Not set'}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium text-muted">Email</dt>
+                  <dd className="mt-1 break-all text-sm text-primary">{user?.email || 'Not available'}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium text-muted">Account role</dt>
+                  <dd className="mt-1 text-sm capitalize text-primary">{user?.role || 'Not available'}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium text-muted">Account status</dt>
+                  <dd className="mt-1 text-sm capitalize text-primary">{user?.status?.replaceAll('_', ' ') || 'Not available'}</dd>
+                </div>
+              </dl>
+              <Button asChild variant="outline" className="self-start">
+                <Link href="/profile">Manage profile</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="notifications" className="mt-4">
           <Card>
@@ -355,6 +391,27 @@ export function SettingsView() {
               </CardContent>
             </Card>
           </div>
+        </TabsContent>
+
+        <TabsContent value="security" className="mt-4">
+          <Card>
+            <CardHeader>
+              <h3 className="text-base font-semibold text-primary">{SETTINGS_COPY.securityTab}</h3>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <p className="max-w-[60ch] text-sm leading-6 text-secondary">
+                Sign-in credentials are managed by your authentication provider. Use the password reset flow to change a password, or sign out of this device.
+              </p>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button asChild variant="outline" className="w-full sm:w-auto">
+                  <Link href="/forgot-password">Reset password</Link>
+                </Button>
+                <Button variant="danger-outline" className="w-full sm:w-auto" onClick={signOut}>
+                  Sign out
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

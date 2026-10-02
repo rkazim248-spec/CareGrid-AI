@@ -12,12 +12,8 @@ export const TRACK_COPY = {
   description:
     'Follow the progress of a report you made with the reference you were given.',
   referenceLabel: 'Reference',
-  referenceHelper: 'For example CG-7QK4M2. Case does not matter.',
+  referenceHelper: 'Enter the reference shown on a saved incident. Case does not matter.',
   lookUp: 'Look up',
-  sampleNotice:
-    'No reference was given, so this is the sample report from the demonstration dataset.',
-  sampleNoticeFor: (reference: string) =>
-    `The reference ${reference} is from the demonstration dataset. No stored report is being read.`,
 
   summaryLabel: 'What was reported',
   lastUpdateLabel: 'Last update',

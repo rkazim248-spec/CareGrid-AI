@@ -69,7 +69,7 @@ export type NavGroup = {
 const NOTIFICATIONS: NavItem = { href: '/notifications', label: 'Notifications', icon: Bell, badge: 'notifications' };
 const PROFILE: NavItem = { href: '/profile', label: 'Profile', icon: UserRound };
 const SETTINGS: NavItem = { href: '/settings', label: 'Settings', icon: Settings };
-const REPORT: NavItem = { href: '/report', label: 'Report an incident', icon: Siren };
+const REPORT: NavItem = { href: '/report', label: 'Report emergency', icon: Siren };
 const MAP: NavItem = { href: '/map', label: 'Map', icon: Map, roles: ['responder', 'dispatcher', 'admin'] };
 const AUDIT: NavItem = { href: '/admin/audit-logs', label: 'Audit log', icon: ScrollText, roles: ['dispatcher', 'admin'] };
 

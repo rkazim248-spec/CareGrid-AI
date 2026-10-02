@@ -27,6 +27,7 @@ import {
 } from '@/features/reporting/upload-manager';
 import { LocationPanel } from '@/features/reporting/location-panel';
 import { ReviewPanel } from '@/features/reporting/review-panel';
+import { ReportStepHeading } from '@/features/reporting/report-step-heading';
 import { VoiceRecorder } from '@/features/reporting/voice-recorder';
 import { AiTriagePanel, type EditableTriage } from '@/features/reporting/ai-triage-panel';
 import { AI_TRIAGE_COPY } from '@/features/reporting/ai-triage-copy';
@@ -374,9 +375,7 @@ export function ReportForm({ onSubmitted }: { onSubmitted: (created: CreatedInci
         <div className="flex flex-col gap-6">
           <Card>
             <CardHeader>
-              <h2 className="text-lg leading-tight font-semibold text-primary">
-                {REPORT_COPY.whatIsHappeningTitle}
-              </h2>
+              <ReportStepHeading number={1} title={REPORT_COPY.whatIsHappeningTitle} />
             </CardHeader>
             <CardContent>
               <Textarea
@@ -395,10 +394,11 @@ export function ReportForm({ onSubmitted }: { onSubmitted: (created: CreatedInci
 
           <Card>
             <CardHeader>
-              <h2 className="text-lg leading-tight font-semibold text-primary">
-                {REPORT_COPY.photosTitle}
-              </h2>
-              <p className="text-sm text-secondary">{REPORT_COPY.photosLead}</p>
+              <ReportStepHeading
+                number={2}
+                title={REPORT_COPY.photosTitle}
+                description={REPORT_COPY.photosLead}
+              />
             </CardHeader>
             <CardContent>
               {/* Phase 5. This replaces the Phase 1 `EvidenceSlots`, which drew a
@@ -413,10 +413,11 @@ export function ReportForm({ onSubmitted }: { onSubmitted: (created: CreatedInci
 
           <Card>
             <CardHeader>
-              <h2 className="text-lg leading-tight font-semibold text-primary">
-                {REPORT_COPY.voiceTitle}
-              </h2>
-              <p className="text-sm text-secondary">{REPORT_COPY.voiceLead}</p>
+              <ReportStepHeading
+                number={2}
+                title={REPORT_COPY.voiceTitle}
+                description={REPORT_COPY.voiceLead}
+              />
             </CardHeader>
             <CardContent>
               <VoiceRecorder
@@ -429,9 +430,7 @@ export function ReportForm({ onSubmitted }: { onSubmitted: (created: CreatedInci
 
           <Card>
             <CardHeader>
-              <h2 className="text-lg leading-tight font-semibold text-primary">
-                {REPORT_COPY.locationTitle}
-              </h2>
+              <ReportStepHeading number={3} title={REPORT_COPY.locationTitle} />
             </CardHeader>
             <CardContent>
               <LocationPanel
@@ -450,9 +449,7 @@ export function ReportForm({ onSubmitted }: { onSubmitted: (created: CreatedInci
 
           <Card>
             <CardHeader>
-              <h2 className="text-lg leading-tight font-semibold text-primary">
-                {REPORT_COPY.categoryTitle}
-              </h2>
+              <ReportStepHeading number={4} title={REPORT_COPY.categoryTitle} />
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
               <CategorySelector value={draft.category} onChange={setCategory} />

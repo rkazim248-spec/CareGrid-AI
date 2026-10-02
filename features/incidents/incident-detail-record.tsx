@@ -154,9 +154,19 @@ export function IncidentDetailRecord({ incidentId }: { incidentId: string }) {
 
         <Card>
           <CardContent className="flex flex-col gap-3 pt-4">
-            <h2 className="text-lg font-semibold text-primary">Gemini analysis</h2>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold text-primary">Gemini analysis</h2>
+              {aiAnalysis ? (
+                <span className="inline-flex min-h-7 items-center rounded-pill border border-selected bg-accent-muted px-2.5 text-xs font-medium text-accent-fg-muted">
+                  AI-generated · advisory
+                </span>
+              ) : null}
+            </div>
             {aiAnalysis ? (
               <>
+                <p className="text-xs leading-5 text-secondary">
+                  This is an AI-generated assessment from the submitted report, not a confirmed finding. A human reviewer must verify it before taking action.
+                </p>
                 <p className="max-w-[72ch] text-sm leading-6 text-secondary">{aiAnalysis.summary}</p>
                 <dl className="grid grid-cols-2 gap-3 text-sm">
                   <div>

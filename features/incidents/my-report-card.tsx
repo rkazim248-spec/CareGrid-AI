@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { MapPin } from 'lucide-react';
+import { MapPin, Sparkles } from 'lucide-react';
 import type { z } from 'zod';
 
 import { Card, CardContent } from '@/components/ui';
@@ -35,6 +35,18 @@ export function MyReportCard({ incident }: { incident: IncidentRow }) {
               <span className="ref-code text-xs text-primary">{incident.reference}</span>
               <StatusBadge status={incident.status} size="sm" />
               <UrgencyBadge urgency={incident.urgency} size="sm" />
+              {incident.ai ? (
+                <span className="inline-flex min-h-7 items-center gap-1.5 rounded-pill border border-selected bg-accent-muted px-2.5 text-xs font-medium text-accent-fg-muted">
+                  <Sparkles className="size-3.5" aria-hidden="true" />
+                  {incident.ai.source === 'ai'
+                    ? 'AI analysis'
+                    : incident.ai.source === 'fallback'
+                      ? 'Rule-based triage'
+                      : incident.ai.source === 'manual'
+                        ? 'Manual triage'
+                        : 'Triage recorded'}
+                </span>
+              ) : null}
             </div>
 
             <p className="clamp-2 max-w-[72ch] text-sm text-primary">{incident.summary}</p>

@@ -34,23 +34,19 @@ export const LANDING = {
   wordmark: 'CareGrid AI',
   signIn: 'Sign in',
   createAccount: 'Create an account',
-  headline: 'Community incident reporting, routed to the people who can help.',
+  headline: 'Smarter Emergency Response. Connected Communities.',
   subline:
-    'CareGrid AI turns an unstructured report into a located, deduplicated incident that a dispatcher and a verified community responder can act on.',
+    'CareGrid AI helps communities report emergencies, add context, and follow incidents through a clear response process.',
   howItWorksTitle: 'How it works',
-  howItWorksLead: 'Four steps from a sentence typed in a hurry to a resolved incident.',
-  capabilitiesTitle: 'Core capabilities',
+  howItWorksLead: 'A report becomes a shared record that people can review and follow.',
+  capabilitiesTitle: 'Tools for a coordinated response',
   capabilitiesLead:
-    'What the platform does, and what it deliberately does not do.',
+    'Useful context for the people responsible for reviewing and responding to a report.',
   trustTitle: 'What this system does not do',
   trustLead:
-    'An emergency product has to be honest about its limits, so they are stated here rather than in a footnote.',
+    'AI can help organize a report. Emergency services and human responders remain responsible for action.',
   footerAbout:
-    'A demonstration incident-routing platform for community reports and community responders.',
-  footerContactLead: 'Email',
-  footerContactNote:
-    'Demo enquiries are handled through the project repository, not by a support desk.',
-  mailto: 'hello@caregrid.example',
+    'A community incident reporting platform for organizing information and tracking response.',
 } as const;
 
 export type LandingStep = {
@@ -60,34 +56,48 @@ export type LandingStep = {
   readonly icon: LucideIcon;
 };
 
-/** Report -> AI Triage -> Responder -> Resolution. docs/04 §13.1. */
+/** The public explanation mirrors the real report and response flow. */
 export const HOW_IT_WORKS: readonly LandingStep[] = [
   {
     id: 'report',
     label: 'Report',
     description:
-      'Describe what is happening in your own words, add a photo or a voice note, and optionally share your location.',
+      'Describe what is happening and add supporting evidence when it is safe to do so.',
     icon: Siren,
   },
   {
     id: 'triage',
     label: 'AI Triage',
     description:
-      'CareGrid AI suggests a category, an urgency estimate, and any safety flags. A person checks every field before it counts.',
+      'The available report information can be analyzed to suggest a category and urgency for human review.',
     icon: Sparkles,
   },
   {
-    id: 'responder',
-    label: 'Responder',
+    id: 'location',
+    label: 'Location',
     description:
-      'A dispatcher reads the report and assigns a verified community responder who is available and close by.',
+      'Share a browser location or enter an address so reviewers have useful place context.',
+    icon: MapIcon,
+  },
+  {
+    id: 'incident',
+    label: 'Incident',
+    description:
+      'Submitting creates a saved incident record with a reference and current status.',
+    icon: CopyCheck,
+  },
+  {
+    id: 'response',
+    label: 'Community response',
+    description:
+      'A dispatcher can review the information and coordinate an eligible community responder.',
     icon: Users,
   },
   {
-    id: 'resolution',
-    label: 'Resolution',
+    id: 'tracking',
+    label: 'Tracking',
     description:
-      'The responder marks arrival and resolution, and a dispatcher closes the report and keeps the record.',
+      'Return to the saved report to follow its status, location, evidence, and available analysis.',
     icon: CircleCheck,
   },
 ];
@@ -104,42 +114,42 @@ export const CAPABILITIES: readonly LandingCapability[] = [
     id: 'triage',
     title: 'Multimodal AI triage',
     description:
-      'Text, photos, and voice notes are read together to suggest a category, an urgency estimate, and the resources an incident needs.',
+      'Available report text and photo evidence can inform an advisory category and urgency estimate for human review.',
     icon: Sparkles,
   },
   {
     id: 'map',
-    title: 'Live emergency map',
+    title: 'Location intelligence',
     description:
-      'Active incidents and responder availability on one map, with an equivalent list view so nothing is map-only.',
+      'Location context helps authorized operations users review incidents alongside an equivalent accessible list.',
     icon: MapIcon,
   },
   {
     id: 'duplicates',
-    title: 'Smart duplicate detection',
+    title: 'Incident tracking',
     description:
-      'Nearby reports about the same incident are suggested for linking, so responders are not sent to the same place twice.',
+      'Saved incident records keep submitted details, available evidence, and status together for later review.',
     icon: CopyCheck,
   },
   {
     id: 'dispatch',
-    title: 'Responder dispatch',
+    title: 'Community response',
     description:
-      'A dispatcher assigns a verified responder by capability and distance, and sees acceptance without refreshing.',
+      'Operations users can coordinate eligible responders using the incident information available to them.',
     icon: Route,
   },
   {
     id: 'status',
-    title: 'Real-time status',
+    title: 'Clear status updates',
     description:
-      'Status changes reach the reporter, the dispatcher, and the assigned responder as they happen.',
+      'Keep the current incident status visible alongside the saved report details.',
     icon: Activity,
   },
   {
     id: 'analytics',
-    title: 'Risk analytics',
+    title: 'Accountable review',
     description:
-      'Incident volume, response times, and repeat locations, so a neighbourhood can see where help keeps being needed.',
+      'AI suggestions are marked separately from confirmed incident details and remain subject to human review.',
     icon: BarChart3,
   },
 ];

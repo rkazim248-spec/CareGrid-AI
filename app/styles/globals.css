@@ -26,51 +26,53 @@
 
 :root {
   color-scheme: dark;
+  --cg-brand-ink: #0b1220;
+  --cg-brand-ink-muted: #d5deec;
 
   /* --- Surfaces (doc 04 §2.2) --------------------------------------------- */
-  --cg-bg-app: #0b0f14; /* application canvas, sidebar, top bar, bottom nav    */
-  --cg-bg-surface: #121820; /* cards, panels, table body, dialog body          */
-  --cg-bg-elevated: #1b2430; /* hover fills, inputs, menus, tab strip          */
-  --cg-bg-inset: #080b0f; /* wells: code, evidence, map list fallback         */
-  --cg-bg-scrim: rgb(4 7 10 / 0.72); /* dialog / sheet backdrop              */
+  --cg-bg-app: #0b1220;
+  --cg-bg-surface: #111b2e;
+  --cg-bg-elevated: #17243a;
+  --cg-bg-inset: #080f1c;
+  --cg-bg-scrim: rgb(4 10 20 / 0.68);
 
   /* --- Text (doc 04 §2.3) -------------------------------------------------- */
-  --cg-text-primary: #e9eff6;
-  --cg-text-secondary: #a8b6c6;
-  --cg-text-muted: #82909f;
-  --cg-text-on-solid: #04191d; /* foreground on a solid accent fill            */
-  --cg-text-inverse: #e9eff6; /* foreground on solid danger/warning/urgency   */
+  --cg-text-primary: #f3f6fc;
+  --cg-text-secondary: #c4cfdf;
+  --cg-text-muted: #9aa9bf;
+  --cg-text-on-solid: #ffffff;
+  --cg-text-inverse: #ffffff;
 
   /* --- Borders (doc 04 §2.4) ---------------------------------------------- */
-  --cg-border-subtle: #212b37;
-  --cg-border-default: #2a3745;
-  --cg-border-strong: #3a4a5c;
-  --cg-border-control: #5e7085; /* interactive control boundary, meets 1.4.11  */
-  --cg-border-focus: #7cc4ff;
-  --cg-border-selected: #2ab3c9;
+  --cg-border-subtle: #202d43;
+  --cg-border-default: #2b3a52;
+  --cg-border-strong: #435570;
+  --cg-border-control: #71829a;
+  --cg-border-focus: #80a8ff;
+  --cg-border-selected: #4c83ff;
 
   /* --- Semantic (doc 04 §2.5) -------------------------------------------- */
-  --cg-accent: #2ab3c9;
-  --cg-accent-hover: #35c4da;
-  --cg-accent-active: #1f97ab;
-  --cg-accent-muted: #0a2126;
-  --cg-accent-fg-muted: #6bd6e6;
+  --cg-accent: #0b5fff;
+  --cg-accent-hover: #3b7aff;
+  --cg-accent-active: #0750dc;
+  --cg-accent-muted: #142b50;
+  --cg-accent-fg-muted: #a8c3ff;
 
-  --cg-danger: #ff6b6b;
-  --cg-danger-muted: #2b1114;
-  --cg-danger-fg-muted: #ff8a8c;
+  --cg-danger: #ef6464;
+  --cg-danger-muted: #35191f;
+  --cg-danger-fg-muted: #ffb0b0;
 
-  --cg-warning: #f2c744;
-  --cg-warning-muted: #2a230d;
-  --cg-warning-fg-muted: #f5d77a;
+  --cg-warning: #f59e0b;
+  --cg-warning-muted: #352710;
+  --cg-warning-fg-muted: #fbd38d;
 
-  --cg-success: #35b37e;
-  --cg-success-muted: #0d2119;
-  --cg-success-fg-muted: #66d3a3;
+  --cg-success: #16a34a;
+  --cg-success-muted: #122c21;
+  --cg-success-fg-muted: #91e0ae;
 
-  --cg-info: #4c9bf0;
-  --cg-info-muted: #0f1e30;
-  --cg-info-fg-muted: #8cc0f7;
+  --cg-info: #5f91f7;
+  --cg-info-muted: #142644;
+  --cg-info-fg-muted: #b3cbff;
 
   --cg-neutral: #8e9bb0;
   --cg-neutral-muted: #1b2430;
@@ -90,13 +92,13 @@
 
   /* --- Status (doc 04 §2.7) ----------------------------------------------- */
   --cg-status-new: #8593a6;
-  --cg-status-triaged: #2ab3c9;
+  --cg-status-triaged: #4c83ff;
   --cg-status-verified: #35b37e;
   --cg-status-assigned: #7c8bff;
   --cg-status-assigned-muted: #15182b;
   --cg-status-en-route: #4c9bf0;
-  --cg-status-on-scene: #2bb3a3;
-  --cg-status-on-scene-muted: #0a2126;
+  --cg-status-on-scene: #4c83ff;
+  --cg-status-on-scene-muted: #142b50;
   --cg-status-resolved: #5cc98b;
   --cg-status-closed: #6b7a8b;
   --cg-status-cancelled: #8e9bb0;
@@ -110,11 +112,11 @@
   --cg-confidence-low: #ffa23a;
 
   /* --- Map placeholder palette (doc 04 §2.9) ------------------------------ */
-  --cg-map-land: #0b0f14;
-  --cg-map-block: #141c25;
-  --cg-map-road-major: #2a3745;
-  --cg-map-road-minor: #1b2430;
-  --cg-map-water: #0b1a26;
+  --cg-map-land: #0b1220;
+  --cg-map-block: #142139;
+  --cg-map-road-major: #40516e;
+  --cg-map-road-minor: #2a3a54;
+  --cg-map-water: #0c1c31;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -210,9 +212,11 @@
   --color-map-road-major: var(--cg-map-road-major);
   --color-map-road-minor: var(--cg-map-road-minor);
   --color-map-water: var(--cg-map-water);
+  --color-brand-ink: var(--cg-brand-ink);
+  --color-brand-ink-muted: var(--cg-brand-ink-muted);
 
   /* Typography (doc 04 §3.2) */
-  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system,
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     'Segoe UI', sans-serif;
   --font-mono: ui-monospace, 'JetBrains Mono', 'SFMono-Regular', 'Cascadia Mono',
     Menlo, Consolas, monospace;
@@ -239,11 +243,11 @@
   --text-5xl--line-height: 3.25rem;
 
   /* Radius (doc 04 §4.2) */
-  --radius-sm: 4px;
-  --radius-control: 6px;
-  --radius-card: 8px;
-  --radius-dialog: 10px;
-  --radius-sheet: 16px;
+  --radius-sm: 5px;
+  --radius-control: 8px;
+  --radius-card: 14px;
+  --radius-dialog: 16px;
+  --radius-sheet: 20px;
   --radius-pill: 9999px;
 
   /* Icon sizes (doc 04 §4.5) */
@@ -318,8 +322,8 @@
     background-color: var(--cg-bg-app);
     color: var(--cg-text-primary);
     font-family: var(--font-sans);
-    font-size: 0.875rem;
-    line-height: 1.25rem;
+    font-size: 1rem;
+    line-height: 1.5;
     font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -346,6 +350,10 @@
   ::selection {
     background-color: var(--cg-accent-muted);
     color: var(--cg-accent-fg-muted);
+  }
+
+  :where(button, a, input, textarea, select) {
+    touch-action: manipulation;
   }
 
   /* Scrollbars: visible and quiet. An invisible scroll region is a
@@ -440,6 +448,22 @@
   /* Page gutter (doc 04 §4.1) */
   .page-gutter {
     padding-inline: 1rem;
+  }
+
+  .landing-cta-surface {
+    background-color: var(--cg-brand-ink);
+    color: #fff;
+  }
+
+  .landing-cta-copy {
+    color: var(--cg-brand-ink-muted);
+  }
+
+  @media (max-width: 639px) {
+    .text-sm {
+      font-size: 0.9375rem;
+      line-height: 1.5rem;
+    }
   }
 
   @media (min-width: 640px) {
@@ -538,59 +562,69 @@
 /* worse than none. DECISION REQUIRED (doc 04 §2.10) on auto/light/dark.       */
 /* -------------------------------------------------------------------------- */
 
-.light {
+:root.light {
   color-scheme: light;
+  --cg-brand-ink: #0b1220;
+  --cg-brand-ink-muted: #d5deec;
 
-  --cg-bg-app: #f6f8fa;
+  --cg-bg-app: #f5f7fb;
   --cg-bg-surface: #ffffff;
-  --cg-bg-elevated: #ffffff;
-  --cg-bg-inset: #f0f3f6;
-  --cg-bg-scrim: rgb(14 22 32 / 0.5);
+  --cg-bg-elevated: #f8faff;
+  --cg-bg-inset: #eef2f7;
+  --cg-bg-scrim: rgb(11 18 32 / 0.48);
 
-  --cg-text-primary: #0e1620;
-  --cg-text-secondary: #3d4b5c;
-  --cg-text-muted: #5c6b7c;
+  --cg-text-primary: #111827;
+  --cg-text-secondary: #334155;
+  --cg-text-muted: #64748b;
+  --cg-text-on-solid: #ffffff;
+  --cg-text-inverse: #ffffff;
 
-  --cg-border-subtle: #d8dee5;
-  --cg-border-default: #d8dee5;
-  --cg-border-strong: #b9c3ce;
-  --cg-border-control: #7a8898;
-  --cg-border-focus: #0b5fbf;
-  --cg-border-selected: #0b6e7a;
+  --cg-border-subtle: #e8edf4;
+  --cg-border-default: #dbe3ed;
+  --cg-border-strong: #b9c7d8;
+  --cg-border-control: #8292a8;
+  --cg-border-focus: #0b5fff;
+  --cg-border-selected: #0b5fff;
 
-  --cg-accent: #0b6e7a;
-  --cg-accent-hover: #095c66;
-  --cg-accent-active: #074b53;
-  --cg-accent-muted: #e2f1f3;
-  --cg-accent-fg-muted: #074b53;
+  --cg-accent: #0b5fff;
+  --cg-accent-hover: #084fcf;
+  --cg-accent-active: #073fa8;
+  --cg-accent-muted: #eaf1ff;
+  --cg-accent-fg-muted: #1648a0;
 
-  --cg-danger: #b3261e;
-  --cg-danger-muted: #fde8e6;
-  --cg-danger-fg-muted: #8c1d18;
+  --cg-danger: #dc2626;
+  --cg-danger-muted: #fef2f2;
+  --cg-danger-fg-muted: #991b1b;
 
-  --cg-warning: #7a5a00;
-  --cg-warning-muted: #fff3d6;
-  --cg-warning-fg-muted: #5c4400;
+  --cg-warning: #f59e0b;
+  --cg-warning-muted: #fffbeb;
+  --cg-warning-fg-muted: #854d0e;
 
-  --cg-success: #1b6b45;
-  --cg-success-muted: #e2f3ea;
-  --cg-success-fg-muted: #145235;
+  --cg-success: #16a34a;
+  --cg-success-muted: #f0fdf4;
+  --cg-success-fg-muted: #166534;
 
-  --cg-info: #0b5fbf;
-  --cg-info-muted: #e4effc;
-  --cg-info-fg-muted: #084a94;
+  --cg-info: #0b5fff;
+  --cg-info-muted: #eff6ff;
+  --cg-info-fg-muted: #1e40af;
 
-  --cg-neutral: #5c6b7c;
-  --cg-neutral-muted: #edf1f5;
+  --cg-neutral: #64748b;
+  --cg-neutral-muted: #f1f5f9;
 
-  --cg-urgency-critical: #b3261e;
-  --cg-urgency-critical-muted: #fde8e6;
-  --cg-urgency-high: #a2520a;
-  --cg-urgency-high-muted: #fdeedd;
-  --cg-urgency-medium: #7a5a00;
-  --cg-urgency-medium-muted: #fff3d6;
-  --cg-urgency-low: #0b5fbf;
-  --cg-urgency-low-muted: #e4effc;
+  --cg-urgency-critical: #b91c1c;
+  --cg-urgency-critical-muted: #fef2f2;
+  --cg-urgency-high: #c2410c;
+  --cg-urgency-high-muted: #fff7ed;
+  --cg-urgency-medium: #a16207;
+  --cg-urgency-medium-muted: #fffbeb;
+  --cg-urgency-low: #1d4ed8;
+  --cg-urgency-low-muted: #eff6ff;
+
+  --cg-map-land: #e8eef7;
+  --cg-map-block: #d8e2ef;
+  --cg-map-road-major: #b6c6da;
+  --cg-map-road-minor: #c9d5e4;
+  --cg-map-water: #dceeff;
 }
 
 /* -------------------------------------------------------------------------- */

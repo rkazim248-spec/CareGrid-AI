@@ -58,7 +58,7 @@ export function AppShell({
           className="min-w-0 flex-1 pb-20 outline-none md:pb-8"
         >
           {permitted ? (
-            <div key={pathname} className="mx-auto w-full max-w-[1600px] px-4 py-6 lg:px-8">
+            <div key={pathname} className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-10 lg:py-8">
               {children}
             </div>
           ) : (

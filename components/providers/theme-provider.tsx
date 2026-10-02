@@ -5,11 +5,8 @@ import * as React from 'react';
 /**
  * Theme provider.
  *
- * docs/04 §2.10 ships dark as the default and only *enforced* theme in v1, but
- * it also specifies a complete, contrast-measured light palette as "the
- * contract for v1.1's theme toggle". Phase 1 therefore implements the toggle
- * against that documented palette rather than deferring it — the tokens already
- * exist, and a half-implemented theme is worse than a working one.
+ * The light palette is the default and follows the CareGrid brand system.
+ * Dark and system-following themes remain available as local preferences.
  *
  * `auto` respects `prefers-color-scheme`; `reduce motion` is a separate,
  * independent preference and must only ever make motion LESS (docs/04 §16.3).
@@ -32,7 +29,7 @@ type UiPreferences = {
 };
 
 const DEFAULTS: UiPreferences = {
-  theme: 'auto',
+  theme: 'light',
   reduceMotion: 'auto',
   denseQueue: false,
 };
@@ -75,7 +72,7 @@ function readStoredPreferences(): UiPreferences {
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [preferences, setPreferences] = React.useState<UiPreferences>(DEFAULTS);
-  const [systemTheme, setSystemTheme] = React.useState<ResolvedTheme>('dark');
+  const [systemTheme, setSystemTheme] = React.useState<ResolvedTheme>('light');
   const [systemReduceMotion, setSystemReduceMotion] = React.useState(false);
 
   // Read the persisted preference after mount, never during render: touching
@@ -150,11 +147,11 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 export function useTheme(): ThemeContextValue {
   const ctx = React.useContext(ThemeContext);
   if (!ctx) {
-    // Rendered outside the provider (e.g. a unit test of an isolated component)
-    // must still get a usable, dark-default context rather than throwing.
+    // Rendered outside the provider (e.g. an isolated component test) must
+    // still get a usable, light-default context rather than throwing.
     return {
-      preference: 'auto',
-      resolved: 'dark',
+      preference: 'light',
+      resolved: 'light',
       reduceMotion: 'auto',
       systemReduceMotion: false,
       denseQueue: false,

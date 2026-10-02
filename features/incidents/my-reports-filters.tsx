@@ -37,11 +37,13 @@ export function MyReportsFilters({
   onQueryChange,
   status,
   onStatusChange,
+  searchLabel = 'Search my reports',
 }: {
   query: string;
   onQueryChange: (value: string) => void;
   status: IncidentStatus | null;
   onStatusChange: (value: IncidentStatus | null) => void;
+  searchLabel?: string;
 }) {
   const statusLabel = status ? STATUS_META[status].label : 'any status';
 
@@ -49,7 +51,7 @@ export function MyReportsFilters({
     <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
       <div className="flex-1">
         <SearchInput
-          label="Search my reports"
+          label={searchLabel}
           value={query}
           onValueChange={onQueryChange}
           helperText="Matches the reference, the summary, and the place name."

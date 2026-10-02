@@ -2,8 +2,9 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { PanelLeftClose, PanelLeftOpen, ShieldCheck } from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 
+import { CareGridMark } from '@/components/brand/caregrid-mark';
 import { cn } from '@/lib/cn';
 import { IconButton } from '@/components/ui/icon-button';
 import { SidebarNav } from '@/components/layout/sidebar-nav';
@@ -95,7 +96,7 @@ function WordmarkMark() {
   return (
     <span className="flex items-center gap-2">
       <span className="flex size-7 items-center justify-center rounded-control bg-accent text-on-solid">
-        <ShieldCheck className="size-4" aria-hidden="true" />
+        <CareGridMark className="size-4" />
       </span>
       <span className="text-sm font-semibold tracking-tight text-primary">CareGrid AI</span>
     </span>

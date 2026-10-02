@@ -1,8 +1,9 @@
 'use client';
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui';
+import { Card, CardContent, CardHeader } from '@/components/ui';
 import { CATEGORY_META } from '@/config';
 import { REPORT_COPY } from '@/features/reporting/report-copy';
+import { ReportStepHeading } from '@/features/reporting/report-step-heading';
 import { formatAccuracy } from '@/lib/format';
 import type { ReportDraft } from '@/features/reporting/report-types';
 
@@ -45,7 +46,7 @@ export function ReviewPanel({ draft }: { draft: ReportDraft }) {
   return (
     <Card className="border-default">
       <CardHeader>
-        <CardTitle className="text-base">{REPORT_COPY.reviewTitle}</CardTitle>
+        <ReportStepHeading number={5} title={REPORT_COPY.reviewTitle} />
       </CardHeader>
       <CardContent>
         <dl className="flex flex-col gap-2">

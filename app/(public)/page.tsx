@@ -1,12 +1,12 @@
 import type { Metadata } from 'next';
 
 import { HowItWorks, LandingHero } from '@/features/landing/landing-hero';
-import { CoreCapabilities, DemoDisclaimer, TrustSection } from '@/features/landing/landing-sections';
+import { CoreCapabilities, DemoDisclaimer, LandingCallToAction, TrustSection } from '@/features/landing/landing-sections';
 
 /**
  * `/` — docs/04_UI_UX_DESIGN_SPECIFICATION.md §13.1.
  *
- * Public. Single centred column, `max-w-[720px]`, no sidebar and no top bar.
+ * Public. Editorial split hero and measured content width, without app chrome.
  * Exactly one `<main>` and exactly one `<h1>` (the hero headline); the public
  * layout owns the wordmark, the sign-in link, and the footer.
  *
@@ -23,12 +23,13 @@ export const metadata: Metadata = {
 export default function Page() {
   return (
     <main id="main-content" className="flex-1 focus:outline-none" tabIndex={-1}>
-      <div className="mx-auto w-full max-w-[720px] px-5 pb-4 sm:px-6">
+      <div className="mx-auto w-full max-w-7xl px-5 pb-4 sm:px-8">
         <LandingHero />
-        <DemoDisclaimer />
         <HowItWorks />
         <CoreCapabilities />
         <TrustSection />
+        <DemoDisclaimer />
+        <LandingCallToAction />
       </div>
     </main>
   );

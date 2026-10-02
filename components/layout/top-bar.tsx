@@ -2,10 +2,11 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { Bell, Menu, Search, ShieldCheck, UserRound } from 'lucide-react';
+import { Bell, Menu, Search, UserRound } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 
 import { cn } from '@/lib/cn';
+import { CareGridMark } from '@/components/brand/caregrid-mark';
 import { IconButton } from '@/components/ui/icon-button';
 import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { SidebarNav } from '@/components/layout/sidebar-nav';
@@ -57,7 +58,7 @@ export function TopBar() {
           .join('');
 
   return (
-    <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center gap-2 border-b border-subtle bg-app px-3 lg:px-4">
+    <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-2 border-b border-subtle bg-surface/95 px-3 backdrop-blur sm:px-5 lg:px-8">
       {/* Mobile: the nav trigger. */}
       <Sheet open={navOpen} onOpenChange={setNavOpen}>
         <SheetTrigger asChild>
@@ -66,8 +67,8 @@ export function TopBar() {
         <SheetContent side="left" className="w-[300px] p-0" hideClose>
           <SheetHeader className="pr-4">
             <SheetTitle className="flex items-center gap-2">
-              <span className="flex size-7 items-center justify-center rounded-control bg-accent text-on-solid">
-                <ShieldCheck className="size-4" aria-hidden="true" />
+              <span className="flex size-8 items-center justify-center rounded-control bg-accent text-on-solid">
+                <CareGridMark className="size-5" />
               </span>
               CareGrid AI
             </SheetTitle>
@@ -132,7 +133,7 @@ export function TopBar() {
           onClick={signOut}
           className="hidden rounded-control px-2 py-1 text-sm text-secondary transition-colors hover:bg-elevated hover:text-primary focus-visible:outline-none focus-visible:ring-[2px] focus-visible:ring-focus lg:inline-flex"
         >
-          Sign out
+          Log out
         </button>
       </div>
     </header>
