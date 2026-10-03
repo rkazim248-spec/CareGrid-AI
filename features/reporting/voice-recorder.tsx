@@ -74,7 +74,8 @@ export const VOICE_COPY = {
     'No microphone was found on this device. Please use text or upload a photo instead.',
   error: 'That recording could not be completed. Please try again, or type your report instead.',
   maxDuration: 'Recording stopped — maximum duration reached.',
-  ready: 'Record a short voice note. You can edit the transcript before submitting.',
+  ready:
+    'Record a short voice note. Transcription may be available with the AI analysis after you submit your report.',
   recording: 'Recording',
   paused: 'Paused',
   saved: 'Recording saved. Add it to your report when you are ready.',

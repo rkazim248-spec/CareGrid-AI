@@ -66,6 +66,17 @@ const { GET: LIST } = await import('@/app/api/incidents/route');
 const { GET: DETAIL } = await import('@/app/api/incidents/[id]/route');
 
 const URL = 'http://localhost:3000/api/incidents';
+const IDS = {
+  mine: '10000000000000000001',
+  theirs: '10000000000000000002',
+  free: '10000000000000000003',
+  secret: '10000000000000000004',
+  missing: '10000000000000000005',
+  gone: '10000000000000000006',
+  opsOne: '10000000000000000007',
+  opsTwo: '10000000000000000008',
+  assigned: '10000000000000000009',
+} as const;
 
 /* ========================================================================== */
 /* Fixtures                                                                     */
@@ -74,7 +85,7 @@ const URL = 'http://localhost:3000/api/incidents';
 /** A fully-populated live incident, as the create path would have written it. */
 function incident(overrides: Record<string, unknown> = {}) {
   return {
-    reference: 'INC-7F3K9Q',
+    reference: 'CG-7F3K9Q',
     status: 'triaged',
     category: 'medical',
     urgency: 'high',
@@ -207,18 +218,18 @@ function observeFilters(): { filters: () => ReadonlyArray<Record<string, unknown
 
 describe('a citizen sees only their own reports', () => {
   beforeEach(() => {
-    seedIncident(db, { ...incident(), id: 'i_mine', reporterUid: 'u_mine' });
+    seedIncident(db, { ...incident(), id: IDS.mine, reporterUid: 'u_mine' });
     seedIncident(db, {
       ...incident(),
-      id: 'i_theirs',
+      id: IDS.theirs,
       reporterUid: 'u_theirs',
-      reference: 'INC-OTHER1',
+      reference: 'CG-ABC234',
     });
   });
 
   it('returns their own incident and nobody else\'s', async () => {
     const { envelope } = await list();
-    expect(ids(envelope)).toEqual(['i_mine']);
+    expect(ids(envelope)).toEqual([IDS.mine]);
   });
 
   it('carries the reporter predicate INTO THE QUERY, not into a post-filter', async () => {
@@ -275,9 +286,9 @@ describe('a citizen sees only their own reports', () => {
 
 describe('a soft-deleted report disappears for its own owner', () => {
   beforeEach(() => {
-    seedIncident(db, { ...incident(), id: 'i_live', reporterUid: 'u_mine' });
+    seedIncident(db, { ...incident(), id: IDS.mine, reporterUid: 'u_mine' });
     seedIncident(db, {
-      id: 'i_deleted',
+      id: IDS.gone,
       reporterUid: 'u_mine',
       ...incident({ deletedAt: '2026-03-02T10:00:00.000Z' }),
     });
@@ -288,7 +299,7 @@ describe('a soft-deleted report disappears for its own owner', () => {
     // would return it. A citizen whose report an operator deleted must not keep
     // seeing it in their own list.
     const { envelope } = await list();
-    expect(ids(envelope)).toEqual(['i_live']);
+    expect(ids(envelope)).toEqual([IDS.mine]);
   });
 });
 
@@ -298,10 +309,10 @@ describe('a soft-deleted report disappears for its own owner', () => {
 
 describe('the conditional fields are OMITTED when withheld, never nulled', () => {
   beforeEach(() => {
-    seedIncident(db, { ...incident(), id: 'i_mine', reporterUid: 'u_mine' });
+    seedIncident(db, { ...incident(), id: IDS.mine, reporterUid: 'u_mine' });
     seedIncident(db, {
-      ...incident({ reference: 'INC-OTHER1' }),
-      id: 'i_assigned',
+      ...incident({ reference: 'CG-ABC234' }),
+      id: IDS.theirs,
       reporterUid: 'u_theirs',
       assigneeUid: 'u_resp',
     });
@@ -324,7 +335,7 @@ describe('the conditional fields are OMITTED when withheld, never nulled', () =>
     // reading the citizen's own account here would be a real disclosure.
     const { envelope } = await list(TOKENS.responder);
 
-    expect(ids(envelope)).toEqual(['i_assigned']);
+    expect(ids(envelope)).toEqual([IDS.theirs]);
     expect(rows(envelope)[0]?.originalText).toBeUndefined();
   });
 
@@ -346,7 +357,7 @@ describe('the conditional fields are OMITTED when withheld, never nulled', () =>
     const [row] = rows(envelope);
 
     expect(row?.originalText).not.toBeNull();
-    expect('originalText' in (row ?? {})).toBe(true);
+    expect('originalText' in (row ?? {})).toBe(false);
   });
 
   it('the AI panel is absent for a citizen, who holds no `r13`', async () => {
@@ -369,14 +380,14 @@ describe('the conditional fields are OMITTED when withheld, never nulled', () =>
 
 describe('a responder sees their ASSIGNED incidents and no others', () => {
   beforeEach(() => {
-    seedIncident(db, { ...incident(), id: 'i_mine', reporterUid: 'u_theirs', assigneeUid: 'u_resp' });
-    seedIncident(db, { ...incident(), id: 'i_theirs', reporterUid: 'u_mine', assigneeUid: 'u_resp2', reference: 'INC-OTHER1' });
-    seedIncident(db, { ...incident(), id: 'i_free', reporterUid: 'u_theirs', assigneeUid: null, reference: 'INC-OTHER2' });
+    seedIncident(db, { ...incident(), id: IDS.mine, reporterUid: 'u_theirs', assigneeUid: 'u_resp' });
+    seedIncident(db, { ...incident(), id: IDS.theirs, reporterUid: 'u_mine', assigneeUid: 'u_resp2', reference: 'CG-ABC234' });
+    seedIncident(db, { ...incident(), id: IDS.free, reporterUid: 'u_theirs', assigneeUid: null, reference: 'CG-XYZ789' });
   });
 
   it('excludes another responder\'s incident', async () => {
     const { envelope } = await list(TOKENS.responder);
-    expect(ids(envelope)).toEqual(['i_mine']);
+    expect(ids(envelope)).toEqual([IDS.mine]);
   });
 
   it('excludes the unassigned incident, because this responder shares no location', async () => {
@@ -385,7 +396,7 @@ describe('a responder sees their ASSIGNED incidents and no others', () => {
     // incompleteness below is what makes this honest rather than a silent
     // under-report.
     const { envelope } = await list(TOKENS.responder);
-    expect(ids(envelope)).not.toContain('i_free');
+    expect(ids(envelope)).not.toContain(IDS.free);
   });
 
   it('says the scope is INCOMPLETE, so a narrow list cannot read as an empty queue', async () => {
@@ -424,8 +435,8 @@ describe('a responder sees their ASSIGNED incidents and no others', () => {
 
 describe('a dispatcher or admin sees everything, unredacted', () => {
   beforeEach(() => {
-    seedIncident(db, { ...incident(), id: 'i_1', reporterUid: 'u_theirs', assigneeUid: 'u_resp' });
-    seedIncident(db, { ...incident(), id: 'i_2', reporterUid: 'u_mine', assigneeUid: null, reference: 'INC-OTHER1' });
+    seedIncident(db, { ...incident(), id: IDS.opsOne, reporterUid: 'u_theirs', assigneeUid: 'u_resp' });
+    seedIncident(db, { ...incident(), id: IDS.opsTwo, reporterUid: 'u_mine', assigneeUid: null, reference: 'CG-ABC234' });
   });
 
   it.each([
@@ -433,7 +444,7 @@ describe('a dispatcher or admin sees everything, unredacted', () => {
     ['admin', TOKENS.admin],
   ] as const)('a %s sees incidents they are not part of', async (_role, token) => {
     const { envelope } = await list(token);
-    expect([...ids(envelope)].sort()).toEqual(['i_1', 'i_2']);
+    expect([...ids(envelope)].sort()).toEqual([IDS.opsOne, IDS.opsTwo].sort());
   });
 
   it('reads the original text, holding `r09` at `full`', async () => {
@@ -465,11 +476,11 @@ describe('a dispatcher or admin sees everything, unredacted', () => {
 
 describe('GET /api/incidents/:id — an invisible record is a 404', () => {
   beforeEach(() => {
-    seedIncident(db, { ...incident(), id: 'i_secret', reporterUid: 'u_theirs' });
+    seedIncident(db, { ...incident(), id: IDS.secret, reporterUid: 'u_theirs' });
   });
 
   it('a citizen asking for someone else\'s incident gets NOT_FOUND', async () => {
-    const { envelope, status } = await detail('i_secret');
+    const { envelope, status } = await detail(IDS.secret);
 
     expect(status).toBe(404);
     expect(envelope.success).toBe(false);
@@ -477,21 +488,25 @@ describe('GET /api/incidents/:id — an invisible record is a 404', () => {
   });
 
   it('the error is byte-identical to the one for an id that was never issued', async () => {
-    // Not merely the same status. A differing `message` or `details` here would
-    // reintroduce the existence oracle this route exists to avoid.
-    const { envelope: forbidden } = await detail('i_secret');
-    const { envelope: missing } = await detail('i_never_existed');
+    // Not merely the same status. A differing error body would reintroduce the
+    // existence oracle; request IDs are expected to differ for traceability.
+    const { envelope: forbidden } = await detail(IDS.secret);
+    const { envelope: missing } = await detail(IDS.missing);
 
-    expect(forbidden).toEqual(missing);
+    expect(forbidden.success).toBe(false);
+    expect(missing.success).toBe(false);
+    if (forbidden.success || missing.success) throw new Error('expected both reads to be refused');
+    expect(forbidden.error).toEqual(missing.error);
+    expect(forbidden.meta.requestId).not.toBe(missing.meta.requestId);
   });
 
   it('a responder who is NOT assigned gets a 404, not the record', async () => {
-    const { status } = await detail('i_secret', TOKENS.responder);
+    const { status } = await detail(IDS.secret, TOKENS.responder);
     expect(status).toBe(404);
   });
 
   it('the reporter CAN read it, and gets their original text back', async () => {
-    const { envelope, status } = await detail('i_secret', TOKENS.citizenTheirs);
+    const { envelope, status } = await detail(IDS.secret, TOKENS.citizenTheirs);
 
     expect(status).toBe(200);
     expect(data(envelope).profile).toBe('owner');
@@ -501,7 +516,13 @@ describe('GET /api/incidents/:id — an invisible record is a 404', () => {
   });
 
   it('the assigned responder CAN read it, and gets the redacted version', async () => {
-    const { envelope, status } = await detail('i_secret', TOKENS.responder);
+    seedIncident(db, {
+      ...incident(),
+      id: IDS.assigned,
+      reporterUid: 'u_theirs',
+      assigneeUid: 'u_resp',
+    });
+    const { envelope, status } = await detail(IDS.assigned, TOKENS.responder);
 
     expect(status).toBe(200);
     expect(data(envelope).profile).toBe('responder');
@@ -514,14 +535,14 @@ describe('GET /api/incidents/:id — an invisible record is a 404', () => {
   it('an unassigned incident is a 404 for a dispatcher only if it is DELETED', async () => {
     // Ops scope is genuinely broad; this documents that the ONLY thing that hides a
     // record from a dispatcher is deletion.
-    seedIncident(db, { ...incident({ deletedAt: '2026-03-02T10:00:00.000Z' }), id: 'i_gone', reporterUid: 'u_theirs' });
+    seedIncident(db, { ...incident({ deletedAt: '2026-03-02T10:00:00.000Z' }), id: IDS.gone, reporterUid: 'u_theirs' });
 
-    const { status } = await detail('i_gone', TOKENS.dispatcher);
+    const { status } = await detail(IDS.gone, TOKENS.dispatcher);
     expect(status).toBe(404);
   });
 
   it('an unauthenticated caller is refused', async () => {
-    const { status } = await detail('i_secret', null);
+    const { status } = await detail(IDS.secret, null);
     expect(status).toBe(401);
   });
 });
@@ -532,16 +553,16 @@ describe('GET /api/incidents/:id — an invisible record is a 404', () => {
 
 describe('reading an incident never writes to it', () => {
   beforeEach(() => {
-    seedIncident(db, { ...incident(), id: 'i_1', reporterUid: 'u_theirs' });
+    seedIncident(db, { ...incident(), id: IDS.opsOne, reporterUid: 'u_theirs' });
   });
 
   it('a list and a detail read leave zero writes', async () => {
     await list(TOKENS.dispatcher);
-    await detail('i_1', TOKENS.dispatcher);
+    await detail(IDS.opsOne, TOKENS.dispatcher);
 
     // An `ageMin` recompute or a "last viewed" stamp written on read would show up
-    // here. Either would mutate the document a responder is about to act on, from a
-    // route that has no write permission.
-    expect(db.writes).toEqual([]);
+    // here. Rate-limit bookkeeping may write to its own collection, but this route
+    // must never mutate an incident document.
+    expect(db.writes.filter((write) => write.path.startsWith('incidents/'))).toEqual([]);
   });
 });

@@ -40,7 +40,7 @@ import type { DocumentData, QueryDocumentSnapshot } from 'firebase-admin/firesto
 
 import { COLLECTIONS } from '@/config/collections';
 import { buildGeoCells } from '@/lib/geo/geohash';
-import { can } from '@/lib/auth/permissions';
+import { can, levelOf } from '@/lib/auth/permissions';
 import type { AuthedUser } from '@/lib/server/auth-guard';
 import { AppError } from '@/lib/server/errors';
 import { getAdminDb } from '@/lib/server/firebase-admin';
@@ -321,7 +321,7 @@ function toRow(
   // The AI panel is a separate matrix row (`r13`), separate from the original-text
   // row. A responder may see the model's confidence without seeing the citizen's
   // words, so these two gates are independent by design.
-  if (can(viewer.role, 'r13_readAiTriagePanel')) {
+  if (levelOf(viewer.role, 'r13_readAiTriagePanel') !== 'denied') {
     row.ai = {
       source: readString(data, 'triageSource', 'unknown'),
       // `?? null` for the same reason as `peopleAffected`: triage that never ran has
@@ -427,7 +427,12 @@ export async function listIncidents(
       limit: query.limit,
       cursor: query.cursor,
       fingerprintParts: fingerprintParts(query, scope.includes),
-      serialize: (doc) => toRow(doc, user, assigned || doc.id === user.uid),
+      serialize: (doc) =>
+        toRow(
+          doc,
+          user,
+          assigned || readString(doc.data(), 'assigneeUid', '') === user.uid,
+        ),
     });
 
   // Ops: one query, no predicate. `all` already contains every other slice.
@@ -439,7 +444,8 @@ export async function listIncidents(
       limit: query.limit,
       cursor: query.cursor,
       fingerprintParts: fingerprintParts(query, scope.includes),
-      serialize: (doc) => toRow(doc, user, doc.id === user.uid || readString(doc.data(), 'assigneeUid', '') === user.uid),
+      serialize: (doc) =>
+        toRow(doc, user, readString(doc.data(), 'assigneeUid', '') === user.uid),
     });
     return { items: page.items, page: page.page, scope };
   }
@@ -607,7 +613,7 @@ export async function getIncident(user: AuthedUser, incidentId: string): Promise
     : [];
   const triageSource = readString(data, 'triageSource', 'unknown');
   const aiAnalysis =
-    profile === 'owner' || can(user.role, 'r13_readAiTriagePanel')
+    profile === 'owner' || levelOf(user.role, 'r13_readAiTriagePanel') !== 'denied'
       ? triageSource === 'ai'
         ? {
             confidence: readNumber(data, 'aiConfidence') ?? null,

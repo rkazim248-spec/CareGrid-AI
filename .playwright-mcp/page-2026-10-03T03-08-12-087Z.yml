@@ -1,0 +1,69 @@
+- generic [active] [ref=f19e1]:
+  - link "Skip to main content" [ref=f19e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - status [ref=f19e4]:
+    - group [ref=f19e7]:
+      - generic "Some features are temporarily unavailable· Details" [ref=f19e8] [cursor=pointer]
+  - generic [ref=f19e9]:
+    - banner [ref=f19e10]:
+      - generic [ref=f19e11]:
+        - link "CareGrid AI" [ref=f19e12] [cursor=pointer]:
+          - /url: /
+        - navigation "Main" [ref=f19e23]:
+          - link "Sign in" [ref=f19e24] [cursor=pointer]:
+            - /url: /login
+          - link "Create account" [ref=f19e25] [cursor=pointer]:
+            - /url: /signup
+    - main [ref=f19e26]:
+      - generic [ref=f19e28]:
+        - generic [ref=f19e29]: CareGrid AI
+        - generic [ref=f19e40]:
+          - generic [ref=f19e41]:
+            - heading "Sign in" [level=1] [ref=f19e42]
+            - paragraph [ref=f19e43]: Report an incident, follow its progress, or pick up an assignment.
+          - generic [ref=f19e45]:
+            - generic [ref=f19e46]:
+              - generic [ref=f19e47]: Email(required)
+              - textbox "Email(required)" [ref=f19e49]:
+                - /placeholder: you@example.com
+            - generic [ref=f19e50]:
+              - generic [ref=f19e51]: Password(required)
+              - generic [ref=f19e52]:
+                - textbox "Password(required)" [ref=f19e53]
+                - button "Show the password" [ref=f19e55]
+              - status [ref=f19e56]: Password is now hidden.
+            - link "Forgot password" [ref=f19e58] [cursor=pointer]:
+              - /url: /forgot-password
+            - button "Sign in" [ref=f19e59]
+            - generic [ref=f19e60]: or
+            - button "Continue with Google" [ref=f19e62]
+            - paragraph [ref=f19e63]:
+              - text: New here?
+              - link "Create an account" [ref=f19e64] [cursor=pointer]:
+                - /url: /signup
+      - paragraph [ref=f19e66]: CareGrid AI does not contact emergency services. Call your local emergency number for urgent help.
+    - contentinfo [ref=f19e67]:
+      - generic [ref=f19e69]:
+        - generic [ref=f19e70]:
+          - paragraph [ref=f19e71]: CareGrid AI
+          - paragraph [ref=f19e72]: A community incident reporting platform for organizing information and tracking response.
+          - paragraph [ref=f19e73]: CareGrid AI does not contact emergency services. Call your local emergency number for urgent help.
+        - generic [ref=f19e74]:
+          - heading "Product" [level=2] [ref=f19e75]
+          - list [ref=f19e76]:
+            - listitem [ref=f19e77]:
+              - link "Report an incident" [ref=f19e78] [cursor=pointer]:
+                - /url: /report
+            - listitem [ref=f19e79]:
+              - link "How it works" [ref=f19e80] [cursor=pointer]:
+                - /url: /#how-it-works
+            - listitem [ref=f19e81]:
+              - link "Safety" [ref=f19e82] [cursor=pointer]:
+                - /url: /#safety
+            - listitem [ref=f19e83]:
+              - link "Privacy summary" [ref=f19e84] [cursor=pointer]:
+                - /url: /settings?tab=privacy
+        - generic [ref=f19e85]:
+          - heading "Emergency help" [level=2] [ref=f19e86]
+          - paragraph [ref=f19e87]: CareGrid AI is not an emergency service. Contact your local emergency number when urgent help is needed.
+  - region "Notifications alt+T"

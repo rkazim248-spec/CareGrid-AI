@@ -7,6 +7,7 @@ import {
   formatCount,
   formatDistance,
   formatDuration,
+  formatRelative,
   formatSlaRemaining,
   haversineM,
 } from '@/lib/format';
@@ -37,6 +38,20 @@ describe('formatDuration', () => {
     expect(formatDuration(180)).toBe('3 min');
     expect(formatDuration(3600)).toBe('1 h');
     expect(formatDuration(4320)).toBe('1 h 12 m');
+  });
+
+  describe('formatRelative', () => {
+    const now = new Date('2026-10-03T10:00:00.000Z');
+
+    it('uses the supplied current time for relative distances', () => {
+      expect(formatRelative('2026-10-03T08:00:00.000Z', now)).toBe('2 hours ago');
+      expect(formatRelative('2026-10-03T12:00:00.000Z', now)).toBe('in 2 hours');
+    });
+
+    it('handles near-current and invalid timestamps without inventing an age', () => {
+      expect(formatRelative('2026-10-03T10:00:30.000Z', now)).toBe('just now');
+      expect(formatRelative('not-a-date', now)).toBe('Unknown time');
+    });
   });
 });
 

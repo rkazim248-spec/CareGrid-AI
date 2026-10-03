@@ -1,0 +1,8 @@
+- generic [active] [ref=f15e1]:
+  - link "Skip to main content" [ref=f15e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - status [ref=f15e4]:
+    - group [ref=f15e7]:
+      - generic "Some features are temporarily unavailable· Details" [ref=f15e8] [cursor=pointer]
+  - generic [ref=f15e9]: Loading
+  - region "Notifications alt+T"

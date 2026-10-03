@@ -7,3 +7,5 @@ export type { ErrorStateProps } from './error-state';
 export { ForbiddenState, NotFoundState } from './forbidden-state';
 
 export { LiveRegion, PendingBadge, RequestId, DemoDataBadge } from './live-region';
+
+export { LiveDataUnavailable } from './live-data-unavailable';

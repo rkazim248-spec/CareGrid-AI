@@ -2627,8 +2627,8 @@ check(
 /**
  * 46. SEC-4: the notification query has NO parameter to widen it.
  *
- * "L5's query is `where('recipientUid','==',uid)` and the hook exposes **no
- * parameter** to widen it. There is no `?recipientUid=` in the client path."
+ * "L5's query is `where('recipientId','==',uid)` and the hook exposes **no
+ * parameter** to widen it. There is no `?recipientId=` in the client path."
  *
  * Asserted as a PARAMETER COUNT, not a regex on the body: a function whose only
  * parameter is `uid` cannot be widened, whatever its body does. That is the
@@ -2759,7 +2759,7 @@ const requiredIndexSignatures = [
   'deletedAt,status,createdAt',
   'geoCells,deletedAt,status,updatedAt',
   'status,capturedAt',
-  'recipientUid,createdAt',
+  'recipientId,createdAt',
   'responderUid,status,dispatchedAt',
   'deletedAt,slaBreachedAt,status,verifiedAt',
 ];
@@ -3149,7 +3149,7 @@ check(
  *
  * Phase 8 asserted the QUERY function's parameter count. This asserts the HOOK,
  * because a hook is where a future developer would be tempted to add a filter —
- * `useRealtimeNotifications({ recipientUid })` is the obvious mistake, and it is
+ * `useRealtimeNotifications({ recipientId })` is the obvious mistake, and it is
  * one that would compile.
  */
 /**
@@ -3157,7 +3157,7 @@ check(
  *
  * The first version of this check asserted the signature STARTED WITH a
  * particular prefix — `useRealtimeNotifications(options: { readonly seed?` — and a
- * mutation that appended `readonly recipientUid?: string` after `seed?` did not
+ * mutation that appended `readonly recipientId?: string` after `seed?` did not
  * break it. **A prefix test cannot detect an addition**, so the check passed for
  * the wrong reason. Asserting the SET of declared properties is the property that
  * actually matters: one option, and it is the seed.
@@ -3237,7 +3237,7 @@ check(
  */
 const rulesScopedToRecipient =
   /match \/notifications\/\{notificationId\}/.test(rules9) &&
-  /resource\.data\.recipientUid == request\.auth\.uid/.test(rules9);
+  /resource\.data\.recipientId == request\.auth\.uid/.test(rules9);
 const rulesWriteIsRefused = /allow create, delete: if false;/.test(rules9);
 const rulesReadOnlyIsScoped =
   /request\.resource\.data\.diff\(resource\.data\)\.affectedKeys\(\)[\s\S]{0,120}?hasOnly\(\['read', 'readAt', 'updatedAt'\]\)/.test(
@@ -3247,7 +3247,7 @@ check(
   'notifications are owner-scoped in the rules, and the only client write is read/readAt (docs/11 §11.3 SEC-5, brief §11)',
   rulesScopedToRecipient && rulesWriteIsRefused && rulesReadOnlyIsScoped,
   !rulesScopedToRecipient
-    ? 'the notifications rule does not scope reads to recipientUid'
+    ? 'the notifications rule does not scope reads to recipientId'
     : !rulesWriteIsRefused
       ? 'a client can create or delete a notification'
       : 'the read-marking write is not restricted to read/readAt/updatedAt',

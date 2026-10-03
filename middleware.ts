@@ -79,9 +79,9 @@ import { NextResponse, type NextRequest } from 'next/server';
  * That reasoning was wrong in this case, and the cost was concrete:
  *   - The browser never loads the Google Maps JavaScript API. Nothing in this
  *     repository imports it, injects a `<script>` for it, or references
- *     `window.google`. The only map component, `features/analytics/risk-map.tsx`,
- *     dynamically imports **Mapbox GL** (`mapbox-gl`), which is bundled by
- *     webpack and served from our own origin.
+ *     `window.google`. Mapbox GL is dynamically imported by the analytics risk
+ *     map and the caller-scoped incident map; its static code is bundled by
+ *     webpack, while its map data endpoints are allowed explicitly below.
  *   - `services/maps/reverse-geocode.ts` does call the Geocoding REST API, but
  *     it does so **server-side** through `lib/env.server.ts`. A server-to-server
  *     fetch is not governed by the browser's CSP, so no directive here can
@@ -93,7 +93,8 @@ import { NextResponse, type NextRequest } from 'next/server';
  *
  * `https://maps.googleapis.com` is also removed from `connect-src` because
  * `https://*.googleapis.com` already matches it; the explicit entry was
- * redundant. Firebase's own origins are kept and are listed for real.
+ * redundant. Firebase and the Mapbox map-data origins used by the browser are
+ * listed explicitly.
  */
 
 /**
@@ -127,7 +128,7 @@ function contentSecurityPolicy(nonce: string): string {
     // whatever the server rendered, which for this app is the auth loading
     // state, and so it spins forever.
     //
-    // No Google Maps origin appears here: no Maps JavaScript API is loaded.
+    // Google Maps is not loaded. Mapbox's bundled GL code uses the app's nonce.
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' ${isDev ? "'unsafe-eval'" : ''}`.trim(),
     // `script-src-attr` blocks inline event handlers (`onclick="..."`), which a
     // nonce cannot cover. React attaches listeners as properties, not attributes,
@@ -139,21 +140,19 @@ function contentSecurityPolicy(nonce: string): string {
     // is far less dangerous than `script-src 'unsafe-inline'`, because CSS
     // cannot execute script in any modern browser.
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-    // Explicit hosts, not `https:`. An evidence image comes from Firebase
-    // Storage and an avatar from Google — and nothing else has any business
-    // being loaded as an image. The Maps origins were removed; see the note
-    // above on why Google Maps is not in this policy at all.
-    "img-src 'self' blob: data: https://*.googleusercontent.com https://firebasestorage.googleapis.com",
-    "font-src 'self' data: https://fonts.gstatic.com",
+    // Explicit hosts, not `https:`. Evidence, avatars, and Mapbox map tiles use
+    // these known image origins; Google Maps itself is not loaded.
+    "img-src 'self' blob: data: https://*.googleusercontent.com https://firebasestorage.googleapis.com https://api.mapbox.com https://tiles.mapbox.com https://*.tiles.mapbox.com",
+    "font-src 'self' data: https://fonts.gstatic.com https://api.mapbox.com",
     // A voice report is recorded in the browser and previewed from a blob before
     // upload, so `blob:` is required here and is not a hole: nothing is loaded
     // from it that the app did not just create.
     "media-src 'self' blob: https://firebasestorage.googleapis.com",
-    "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://www.googleapis.com https://firestore.googleapis.com https://firebasestorage.googleapis.com",
+    "connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://www.googleapis.com https://firestore.googleapis.com https://firebasestorage.googleapis.com https://api.mapbox.com https://tiles.mapbox.com https://*.tiles.mapbox.com https://events.mapbox.com",
     // Google sign-in opens a POPUP (a new top-level window, not an iframe), and
     // the Firebase Auth iframe flow is served from the project's own domain.
     // Both are listed so the Google provider keeps working under this policy;
-    // neither is a script source.
+    // neither is a script source. Mapbox does not use an iframe.
     "frame-src 'self' https://accounts.google.com https://*.firebaseapp.com",
     // A Firestore listener and the map both run their work off the main thread.
     "worker-src 'self' blob:",

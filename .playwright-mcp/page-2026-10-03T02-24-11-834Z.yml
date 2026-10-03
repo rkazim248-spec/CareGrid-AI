@@ -1,0 +1,9 @@
+- generic [active] [ref=f12e1]:
+  - link "Skip to main content" [ref=f12e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - status [ref=f12e4]:
+    - group [ref=f12e7]:
+      - generic "Some features are temporarily unavailable· Details" [ref=f12e8] [cursor=pointer]
+  - status [ref=f12e9]:
+    - generic [ref=f12e10]: Checking your secure session
+  - region "Notifications alt+T"

@@ -1,7 +1,6 @@
 'use client';
 
 import * as React from 'react';
-import { toast } from 'sonner';
 import { UserCog, ShieldAlert, Ban, RotateCcw } from 'lucide-react';
 
 import { PageHeader } from '@/components/layout';
@@ -70,18 +69,21 @@ export function AdminUsersView() {
   const paged = filtered.slice(page * pageSize, page * pageSize + pageSize);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
 
-  function openRoleDialog(user: User) {
-    if (user.uid === MOCK_CURRENT_USER_UID || user.role === 'admin') return;
-    setRoleDialog({ user, step: 1, nextRole: user.role, reason: '' });
-  }
-
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Users"
-        description="Accounts, roles, and access state. Every change here is recorded with your name, the reason, and the previous and new role."
+        description="Review demo account, role, and access-state records. Account changes are unavailable in this build."
         meta={<DemoDataBadge />}
       />
+
+      <Alert tone="warning">
+        <AlertTitle>User access changes are unavailable in this demo</AlertTitle>
+        <AlertDescription>
+          The displayed accounts are demo data. Role changes, suspension, and claim resets are
+          disabled; no account or audit record will be changed.
+        </AlertDescription>
+      </Alert>
 
       <Card>
         <CardContent className="grid gap-4 pt-4 md:grid-cols-4">
@@ -196,8 +198,8 @@ export function AdminUsersView() {
                         {SELF_ROLE_CHANGE_REASON}
                       </span>
                     ) : (
-                      <Button variant="outline" size="sm" onClick={() => openRoleDialog(user)}>
-                        Change role
+                      <Button variant="outline" size="sm" disabled title="Role changes are unavailable in this demo.">
+                        Role change unavailable
                       </Button>
                     )}
                   </TableCell>
@@ -263,19 +265,19 @@ export function AdminUsersView() {
                   <Button
                     variant="danger-outline"
                     size="sm"
-                    disabled={selectedUser.uid === MOCK_CURRENT_USER_UID}
+                    disabled
                     title={
                       selectedUser.uid === MOCK_CURRENT_USER_UID
                         ? SELF_ROLE_CHANGE_REASON
-                        : 'Requires a reason, recorded in the audit log'
+                        : 'Account suspension is unavailable in this demo.'
                     }
                   >
                     <Ban className="size-3.5" aria-hidden="true" />
-                    Suspend
+                    Suspend unavailable
                   </Button>
-                  <Button variant="ghost" size="sm" title="Requires a reason">
+                  <Button variant="ghost" size="sm" disabled title="Claim resets are unavailable in this demo.">
                     <RotateCcw className="size-3.5" aria-hidden="true" />
-                    Reset claims
+                    Reset claims unavailable
                   </Button>
                 </div>
               </div>
@@ -290,12 +292,7 @@ export function AdminUsersView() {
         onClose={() => setRoleDialog(null)}
         onStep1={(nextRole, reason) => setRoleDialog((s) => (s ? { ...s, step: 2, nextRole, reason } : s))}
         onBack={() => setRoleDialog((s) => (s ? { ...s, step: 1 } : s))}
-        onConfirm={(user) => {
-          toast('Role change recorded', {
-            description: `${user.displayName} is now ${ROLE_META[roleDialog?.nextRole ?? 'citizen'].label}. Nothing was sent — this is the Phase 1 UI shell.`,
-          });
-          setRoleDialog(null);
-        }}
+        onConfirm={() => setRoleDialog(null)}
       />
     </div>
   );
@@ -375,10 +372,10 @@ function RoleChangeDialog({
               />
 
               <Alert tone="neutral">
-                <AlertTitle>What will be recorded</AlertTitle>
+                <AlertTitle>Demo-only preview</AlertTitle>
                 <AlertDescription>
-                  Your name, this reason, the previous role ({ROLE_META[user.role].label}), and the
-                  new role. The audit entry is append-only.
+                  This interface cannot save role changes. No account or audit record will be
+                  updated.
                 </AlertDescription>
               </Alert>
             </div>
@@ -389,17 +386,17 @@ function RoleChangeDialog({
               </Button>
               <Button
                 variant="primary"
-                disabled={reasonTooShort || unchanged}
+                disabled
                 title={
                   unchanged
                     ? 'That user already has this role'
                     : reasonTooShort
                       ? 'A reason is required'
-                      : undefined
+                      : 'Role changes are unavailable in this demo.'
                 }
                 onClick={() => onStep1(nextRole, reason)}
               >
-                Continue to confirmation
+                Confirmation unavailable
               </Button>
             </DialogFooter>
           </>
@@ -408,8 +405,7 @@ function RoleChangeDialog({
             <DialogHeader>
               <DialogTitle>Confirm the role change</DialogTitle>
               <DialogDescription>
-                This is recorded in the audit log with your name, the reason, and the previous and
-                new role.
+                Role changes cannot be saved from this demo interface.
               </DialogDescription>
             </DialogHeader>
 
@@ -433,8 +429,8 @@ function RoleChangeDialog({
               <Button variant="ghost" onClick={onBack}>
                 Back
               </Button>
-              <Button variant="primary" onClick={() => onConfirm(user)}>
-                Change role and record it
+              <Button variant="primary" disabled title="Role changes are unavailable in this demo." onClick={() => onConfirm(user)}>
+                Save unavailable
               </Button>
             </DialogFooter>
           </>

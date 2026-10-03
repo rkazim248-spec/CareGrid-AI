@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 
-import { AdminOverviewView } from '@/features/admin/admin-overview-view';
+import { LiveDataUnavailable } from '@/components/feedback';
 
 export const metadata: Metadata = {
   title: 'Administration',
@@ -9,5 +9,10 @@ export const metadata: Metadata = {
 };
 
 export default function AdminOverviewPage() {
-  return <AdminOverviewView />;
+  return (
+    <LiveDataUnavailable
+      title="Administration"
+      description="Account, responder-verification, and audit information is not connected to live administrative services in this build."
+    />
+  );
 }

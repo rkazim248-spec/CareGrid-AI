@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from 'next';
 import { headers } from 'next/headers';
 
+import 'mapbox-gl/dist/mapbox-gl.css';
 import '@/app/styles/globals.css';
 import { AppProviders } from '@/components/providers/app-providers';
 import { DemoAvailabilityNotice } from '@/components/feedback/demo-availability-notice';

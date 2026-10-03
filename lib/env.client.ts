@@ -430,3 +430,7 @@ export function isMapboxConfigured(): boolean {
   return getPublicMapboxConfig().accessToken !== null;
 }
 
+/** Whether development-only client diagnostics should be written to the console. */
+export function isDevelopmentBuild(): boolean {
+  return process.env.NODE_ENV === 'development';
+}

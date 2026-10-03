@@ -350,10 +350,9 @@ npm run dev            # http://localhost:3000
 | `npm run secrets:scan` | Repository-wide secret scan |
 | `npm run verify` | typecheck → lint → test → security → secrets → build |
 
-> **Note:** `npm run verify` includes `npm run build`. Do not run it while `npm run dev` is
-> running — the production build overwrites the dev server's `.next` directory and the dev
-> server will fail with `Cannot find module './xxxx.js'`. Stop the dev server first, or run
-> `build` separately.
+> **Note:** Development uses `.next-dev`; production builds use `.next`, so a build does not
+> replace the normal development output. If you run more than one dev server at a time, give
+> each a distinct `NEXT_DEV_DIST_DIR` value to prevent their webpack chunks from colliding.
 
 `security:check` deliberately **fails closed** when it cannot verify something. In an
 environment without `git` installed it reports the three tracking checks as failures rather

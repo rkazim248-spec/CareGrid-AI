@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 
-import { ResponderDirectory } from '@/features/responders/responder-directory';
+import { LiveDataUnavailable } from '@/components/feedback';
 import { RoleGate } from '@/features/shared/role-gate';
 
 /**
@@ -14,13 +14,16 @@ import { RoleGate } from '@/features/shared/role-gate';
 export const metadata: Metadata = {
   title: 'Responders',
   description:
-    'Community responder availability, verification, capabilities, and service radius. Demo data only.',
+    'Responder availability and capabilities are unavailable until the live roster service is connected.',
 };
 
 export default function Page() {
   return (
     <RoleGate href="/responders">
-      <ResponderDirectory />
+      <LiveDataUnavailable
+        title="Responder directory"
+        description="Responder profiles and availability are not connected to a live roster yet."
+      />
     </RoleGate>
   );
 }

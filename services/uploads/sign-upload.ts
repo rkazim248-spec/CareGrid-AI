@@ -39,7 +39,7 @@ import { Timestamp } from 'firebase-admin/firestore';
 import { z } from 'zod';
 
 import { AppError } from '@/lib/server/errors';
-import { uploadConfig } from '@/lib/env.server';
+import { isTestEnvironment, uploadConfig } from '@/lib/env.server';
 import { getAdminDb } from '@/lib/server/firebase-admin';
 import { COLLECTIONS } from '@/config/collections';
 import {
@@ -158,7 +158,7 @@ function claimDocument(uid: string, mediaId: string) {
 export async function claimFor(uid: string, mediaId: string): Promise<Claim | null> {
   const key = `${uid}/${mediaId}`;
   let claim: Claim | null;
-  if (process.env.NODE_ENV === 'test') {
+  if (isTestEnvironment()) {
     claim = claims.get(key) ?? null;
   } else {
     const snapshot = await claimDocument(uid, mediaId).get();
@@ -170,7 +170,7 @@ export async function claimFor(uid: string, mediaId: string): Promise<Claim | nu
 
   if (claim === null) return null;
   if (Date.now() - claim.issuedAtMs > uploadConfig().stagingSweepMin * 60_000) {
-    if (process.env.NODE_ENV === 'test') claims.delete(key);
+    if (isTestEnvironment()) claims.delete(key);
     else await claimDocument(uid, mediaId).delete();
     return null;
   }
@@ -179,7 +179,7 @@ export async function claimFor(uid: string, mediaId: string): Promise<Claim | nu
 
 /** Forget a claim. Called after the object has been moved or deleted. */
 export async function releaseClaim(uid: string, mediaId: string): Promise<void> {
-  if (process.env.NODE_ENV === 'test') {
+  if (isTestEnvironment()) {
     claims.delete(`${uid}/${mediaId}`);
     return;
   }
@@ -328,7 +328,7 @@ export async function signUpload(
     kind: body.kind,
     ...(body.durationSec === undefined ? {} : { durationSec: body.durationSec }),
   };
-  if (process.env.NODE_ENV === 'test') {
+  if (isTestEnvironment()) {
     claims.set(`${uid}/${mediaId}`, claim);
   } else {
     await claimDocument(uid, mediaId).create({

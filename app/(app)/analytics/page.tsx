@@ -14,7 +14,7 @@ import { RoleGate } from '@/features/shared/role-gate';
 export const metadata: Metadata = {
   title: 'Analytics',
   description:
-    'Incident volume, category mix, response-time distribution, and risk zones. Demo data only.',
+    'Incident volume, category mix, response-time distribution, and risk zones from authorized operational data.',
 };
 
 export default function Page() {

@@ -1,12 +1,17 @@
 import type { Metadata } from 'next';
 
-import { AdminIncidentsView } from '@/features/admin/admin-views';
+import { LiveDataUnavailable } from '@/components/feedback';
 
 export const metadata: Metadata = {
   title: 'Incident archive',
-  description: 'Every incident, including soft-deleted ones. Restoring is reversible.',
+  description: 'The administrative incident archive is unavailable until its live service is connected.',
 };
 
 export default function AdminIncidentsPage() {
-  return <AdminIncidentsView />;
+  return (
+    <LiveDataUnavailable
+      title="Incident archive"
+      description="The administrative archive, including deleted incidents, is not connected to a live service."
+    />
+  );
 }

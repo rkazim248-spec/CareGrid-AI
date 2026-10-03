@@ -1,10 +1,13 @@
 import type { NextConfig } from 'next';
 
+const developmentOutputDirectory = process.env.NEXT_DEV_DIST_DIR?.trim() || '.next-dev';
+
 const nextConfig: NextConfig = {
-  // Keep `next dev` output separate from `next build` / `next start`. Sharing
-  // `.next` lets a production build replace webpack chunks while a dev server
-  // is serving them, causing missing vendor-chunk runtime errors.
-  distDir: process.env.NODE_ENV === 'development' ? '.next-dev' : '.next',
+  // Keep `next dev` output separate from `next build` / `next start`; concurrent
+  // dev servers can also opt into distinct directories with NEXT_DEV_DIST_DIR.
+  // Sharing one dev directory between servers can replace webpack chunks while
+  // another server is serving them, causing missing vendor-chunk runtime errors.
+  distDir: process.env.NODE_ENV === 'development' ? developmentOutputDirectory : '.next',
   // Do not advertise the framework (docs/19_DEPLOYMENT_DEVOPS.md §2)
   poweredByHeader: false,
   reactStrictMode: true,

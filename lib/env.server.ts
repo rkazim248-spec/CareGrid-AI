@@ -88,6 +88,10 @@ function optionalBoolean(name: string, fallback: boolean): boolean {
   throw new ServerEnvError(name, `Expected "true" or "false", got "${raw}".`);
 }
 
+export function isTestEnvironment(): boolean {
+  return process.env.NODE_ENV === 'test';
+}
+
 const where = 'See docs/21_ENVIRONMENT_VARIABLES.md and .env.example.';
 
 /* ========================================================================== */

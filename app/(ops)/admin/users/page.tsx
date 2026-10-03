@@ -1,18 +1,17 @@
 import type { Metadata } from 'next';
-import { Suspense } from 'react';
 
-import { AdminSkeleton } from '@/components/layout';
-import { AdminUsersView } from '@/features/admin/admin-users-view';
+import { LiveDataUnavailable } from '@/components/feedback';
 
 export const metadata: Metadata = {
   title: 'Users',
-  description: 'Accounts, roles, and access state. Every change is recorded with a reason.',
+  description: 'Account and access information is unavailable until the live admin service is connected.',
 };
 
 export default function AdminUsersPage() {
   return (
-    <Suspense fallback={<AdminSkeleton label="Loading users" />}>
-      <AdminUsersView />
-    </Suspense>
+    <LiveDataUnavailable
+      title="User management"
+      description="User records and access controls are not connected to a live administrative service."
+    />
   );
 }

@@ -3,13 +3,14 @@
 
 import * as React from 'react';
 import dynamic from 'next/dynamic';
-import { Info } from 'lucide-react';
+import { RefreshCw } from 'lucide-react';
 
 import {
   Alert,
   AlertDescription,
   AlertIcon,
   AlertTitle,
+  Button,
   Card,
   CardContent,
   CardDescription,
@@ -18,8 +19,7 @@ import {
 } from '@/components/ui';
 import { PageHeader, SectionHeader } from '@/components/layout';
 import { CATEGORY_META, URGENCY_META } from '@/config';
-import { DEMO_NOW, formatCount, formatDate, formatDuration } from '@/lib/format';
-import { MOCK_ANALYTICS } from '@/lib/mock-data';
+import { APP_TIMEZONE, formatCount, formatDate, formatDuration } from '@/lib/format';
 import type { Analytics } from '@/types';
 import { ChartCard } from '@/features/analytics/chart-card';
 import type { ChartSeries } from '@/features/analytics/chart-card';
@@ -42,11 +42,8 @@ import { apiFetch } from '@/lib/api/client';
  *  2. **Provenance is on the page.** `range.source`, the timezone, and any
  *     `range.advisory` are rendered next to the control that changed them, not
  *     buried in a tooltip.
- *  3. **Demo data says so.** A `neutral` Alert states it once, at the top, in the
- *     exact words the spec requires.
- *  4. **No comparative claims.** The risk section reports scores and counts. It
- *     never says one place is riskier than another, because these are fabricated
- *     numbers and a comparison would be a fabricated claim about a real city.
+ *  3. **No comparative claims.** The risk section reports scores and counts. It
+ *     never says one place is riskier than another without measured evidence.
  *
  * Recharts is loaded with `next/dynamic` + `ssr: false` (docs/04 §5.30 pattern):
  * it measures the DOM, so a server render is not merely wasteful but wrong.
@@ -56,31 +53,39 @@ const CategoryChart = dynamic(() => import('@/features/analytics/category-chart'
 const TrendChart = dynamic(() => import('@/features/analytics/trend-chart'), { ssr: false });
 const ResponseChart = dynamic(() => import('@/features/analytics/response-chart'), { ssr: false });
 
-const DEMO_NOTICE =
-  'Demo data. These figures are fabricated for this UI shell and describe no real city.';
-
 /** Region names come from a constant, never a literal in JSX (docs/04 §5.2). */
 const CHARTS_REGION = 'Charts';
 
 /**
  * The single analytics read, with the four states brief §16 requires.
  *
- * `MOCK_ANALYTICS` is NOT a fallback for a failed request. A dispatcher reading a
- * trend chart cannot tell fabricated numbers from measured ones, and brief §11
- * forbids exactly that substitution in its more dangerous form. The demo notice
- * renders only while `isDemo` is true, so the two can never be confused.
+ * Failed reads produce an error state; no fabricated figures are used as a
+ * fallback.
  */
 type AnalyticsState =
   | { readonly kind: 'loading' }
   | { readonly kind: 'error'; readonly message: string }
-  | { readonly kind: 'ready'; readonly data: Analytics; readonly isDemo: boolean };
+  | { readonly kind: 'ready'; readonly data: Analytics; readonly asOfIso: string };
 
-export function useAnalytics(range: Analytics["range"]): AnalyticsState {
+function initialAnalyticsRange(now = new Date()): Analytics['range'] {
+  const to = now.toISOString().slice(0, 10);
+  const from = new Date(now.getTime() - 29 * 86_400_000).toISOString().slice(0, 10);
+  return {
+    from,
+    to,
+    timezone: APP_TIMEZONE,
+    granularity: 'day',
+    source: 'live',
+    advisory: null,
+  };
+}
+
+export function useAnalytics(range: Analytics['range'], refresh = 0): AnalyticsState {
   const [state, setState] = React.useState<AnalyticsState>({ kind: 'loading' });
 
   // A string key, so changing one filter does not tear down an in-flight request
   // for a filter that did not change, and an unrelated re-render refetches nothing.
-  const key = [range.from, range.to, range.granularity].join("|");
+  const key = [range.from, range.to, range.granularity, refresh].join('|');
 
   React.useEffect(() => {
     let live = true;
@@ -94,7 +99,7 @@ export function useAnalytics(range: Analytics["range"]): AnalyticsState {
       signal: controller.signal,
     })
       .then((data: Analytics) => {
-        if (live) setState({ kind: 'ready', data, isDemo: false });
+        if (live) setState({ kind: 'ready', data, asOfIso: new Date().toISOString() });
       })
       .catch((error: unknown) => {
         if (!live) return;
@@ -126,9 +131,10 @@ export function useAnalytics(range: Analytics["range"]): AnalyticsState {
 export function AnalyticsView() {
 
   const { role } = useResolvedSession();
-  const [range, setRange] = React.useState<Analytics['range']>(MOCK_ANALYTICS.range);
+  const [range, setRange] = React.useState<Analytics['range']>(initialAnalyticsRange);
+  const [refresh, setRefresh] = React.useState(0);
 
-  const state = useAnalytics(range);
+  const state = useAnalytics(range, refresh);
   const canExport = role === 'dispatcher' || role === 'admin';
   const showResponders = canExport;
 
@@ -172,10 +178,19 @@ export function AnalyticsView() {
         />
         <Alert tone="warning">
           <AlertIcon tone="warning" />
-          <div>
+          <div className="min-w-0 flex-1">
             <AlertTitle>Analytics are unavailable</AlertTitle>
             <AlertDescription>{state.message}</AlertDescription>
           </div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => setRefresh((value) => value + 1)}
+          >
+            <RefreshCw aria-hidden="true" />
+            Retry
+          </Button>
         </Alert>
       </div>
     );
@@ -201,22 +216,18 @@ export function AnalyticsView() {
        * arrives that stops being true, and leaving it up would be a lie in the
        * OTHER direction — a reader told figures are demo when they are not.
        */}
-      {state.isDemo ? (
-        <Alert tone="neutral">
-          <AlertIcon tone="neutral" />
-          <div>
-            <AlertTitle className="flex items-center gap-1.5">
-              <Info className="size-3.5" aria-hidden="true" />
-              About these numbers
-            </AlertTitle>
-            <AlertDescription>{DEMO_NOTICE}</AlertDescription>
-          </div>
-        </Alert>
-      ) : null}
+      <RangeControl
+        range={{
+          ...range,
+          timezone: analytics.range.timezone,
+          source: analytics.range.source,
+          advisory: analytics.range.advisory,
+        }}
+        onRangeChange={setRange}
+        canExport={canExport}
+      />
 
-      <RangeControl range={range} onRangeChange={setRange} canExport={canExport} />
-
-      <KpiGrid totals={analytics.totals} asOfIso={DEMO_NOW.toISOString()} />
+      <KpiGrid totals={analytics.totals} asOfIso={state.asOfIso} />
 
       <section aria-label={CHARTS_REGION} className="flex flex-col gap-4">
         <SectionHeader

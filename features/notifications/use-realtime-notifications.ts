@@ -10,8 +10,8 @@
  * ---------------------------------------------------------------------------
  * SCOPED TO ONE RECIPIENT, AND THE SCOPE IS STRUCTURAL
  * ---------------------------------------------------------------------------
- * `docs/11 §11.3` SEC-4: "L5's query is `where('recipientUid','==',uid)` and the
- * hook exposes **no parameter** to widen it. There is no `?recipientUid=` in the
+ * `docs/11 §11.3` SEC-4: "L5's query is `where('recipientId','==',uid)` and the
+ * hook exposes **no parameter** to widen it. There is no `?recipientId=` in the
  * client path."
  *
  * So this hook takes no filter, no query options, and no "fetch all" escape hatch.
@@ -61,7 +61,7 @@ import type { NotificationSeverity, NotificationType } from '@/types';
  *
  * A **subset**, not the stored document. `docs/11 §11.1` puts `notifications` at
  * "own" for every role, so nothing here is redacted — but the stored document also
- * carries `recipientUid`, and echoing a recipient's own uid into every row of their
+ * carries `recipientId`, and echoing a recipient's own uid into every row of their
  * own list is data they did not ask for and that no UI displays.
  */
 export type LiveNotification = {
@@ -249,7 +249,7 @@ export function toastCandidate(
  * The ONLY client-side write to any operational collection, and only these fields.
  *
  * `firestore.rules` already enforces it — the `notifications` block allows an update
- * only on `read` / `readAt` / `updatedAt` when `recipientUid == auth.uid` — so this
+ * only on `read` / `readAt` / `updatedAt` when `recipientId == auth.uid` — so this
  * helper is a convenience that cannot widen the grant. It exists so the field list
  * is written once rather than at three call sites, and so a future field cannot be
  * added without someone reading the rules alongside it.

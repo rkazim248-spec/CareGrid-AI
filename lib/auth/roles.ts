@@ -13,13 +13,13 @@
  * ---------------------------------------------------------------------------
  * docs/22 §9:
  *
- *   citizen    → `/dashboard` (their account and saved reports)
+ *   citizen    → `/report`    (the primary citizen action)
  *   responder  → `/dashboard`  (their assignments)
  *   dispatcher → `/dashboard`  (the operations console)
  *   admin      → `/admin`      (the trust surface)
  *
- * A citizen has a personal dashboard, not an operations console. Its incident
- * list is still scoped by the server.
+ * Citizens start at the report form; responder and dispatcher accounts use the
+ * dashboard, with server-side incident scoping enforced on every read.
  */
 
 import { can, type CapabilityKey } from '@/lib/auth/permissions';
@@ -38,7 +38,7 @@ export type { UserRole };
  * ERROR here rather than an `undefined` at runtime that navigates to `/`.
  */
 export const ROLE_LANDING: Readonly<Record<UserRole, string>> = {
-  citizen: '/dashboard',
+  citizen: '/report',
   responder: '/dashboard',
   dispatcher: '/dashboard',
   admin: '/admin',
@@ -46,12 +46,11 @@ export const ROLE_LANDING: Readonly<Record<UserRole, string>> = {
 
 /**
  * The capability that justifies each landing route. Asserted in
- * `tests/unit/permissions.test.ts`: a citizen landing on `/dashboard` must be
- * able to read their own reports, and a dispatcher landing there must be able
- * to read all incidents.
+ * `tests/unit/roles.test.ts`: a citizen lands on the report form and can create
+ * an incident, while operations roles land on views they are allowed to read.
  */
 export const LANDING_REQUIRES: Readonly<Record<UserRole, CapabilityKey>> = {
-  citizen: 'r05_readOwnIncidents',
+  citizen: 'r01_createIncident',
   responder: 'r05_readOwnIncidents',
   dispatcher: 'r08_readAllIncidents',
   admin: 'r52_listUsers',

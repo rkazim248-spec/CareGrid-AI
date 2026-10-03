@@ -1,7 +1,6 @@
 'use client';
 
 import * as React from 'react';
-import { toast } from 'sonner';
 import { Archive, RotateCcw, Trash2, ScrollText, UserCheck, ShieldQuestion } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
@@ -66,10 +65,18 @@ export function AdminIncidentsView() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Incident archive"
-        description="Every incident, including soft-deleted ones. Restoring is reversible; hard deletion does not exist anywhere in this product."
+        description="Review demo incident records, including records marked as deleted. Archive actions are unavailable in this build."
         meta={<DemoDataBadge />}
         actions={[{ label: 'Export CSV', variant: 'outline', icon: Archive }]}
       />
+
+      <Alert tone="warning">
+        <AlertTitle>Archive changes are unavailable in this demo</AlertTitle>
+        <AlertDescription>
+          The displayed records are demo data. Restore and delete actions are disabled and do not
+          change incident records.
+        </AlertDescription>
+      </Alert>
 
       {includeDeleted ? (
         <Alert tone="warning">
@@ -199,29 +206,25 @@ export function AdminIncidentsView() {
                         <Button
                           variant="secondary"
                           size="sm"
-                          onClick={() =>
-                            toast('Restore requested', {
-                              description:
-                                'Phase 1 shell: nothing was sent. A real restore requires a reason and writes an audit entry.',
-                            })
-                          }
+                          disabled
+                          title="Restore is unavailable in this demo."
                         >
                           <RotateCcw className="size-3.5" aria-hidden="true" />
-                          Restore
+                          Restore unavailable
                         </Button>
                       ) : null}
                       <Button
                         variant="danger-outline"
                         size="sm"
-                        disabled={incident.status === 'closed'}
+                        disabled
                         title={
                           incident.status === 'closed'
                             ? 'A closed incident cannot be deleted. It is retained for the audit trail.'
-                            : 'Requires a reason of at least 10 characters'
+                            : 'Delete is unavailable in this demo.'
                         }
                       >
                         <Trash2 className="size-3.5" aria-hidden="true" />
-                        Delete
+                        Delete unavailable
                       </Button>
                     </div>
                   </TableCell>
@@ -287,9 +290,17 @@ export function AdminRespondersView() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Responder verification"
-        description="Approving makes a responder assignable to incidents. Verification is a separate capability from a role change, so this page has no role controls at all."
+        description="Review demo responder profiles. Verification decisions are unavailable in this build."
         meta={<DemoDataBadge />}
       />
+
+      <Alert tone="warning">
+        <AlertTitle>Verification decisions are unavailable in this demo</AlertTitle>
+        <AlertDescription>
+          The displayed responder records are demo data. Approval and rejection are disabled and do
+          not update an account or send a notification.
+        </AlertDescription>
+      </Alert>
 
       <div className="grid gap-4 lg:grid-cols-[380px_minmax(0,1fr)]">
         <Card className="h-fit">
@@ -422,11 +433,11 @@ export function AdminRespondersView() {
                 </Alert>
               ) : (
                 <div className="flex flex-col gap-2 sm:flex-row">
-                  <Button variant="primary" className="min-h-12" onClick={() => setDecision('approve')}>
-                    Approve responder
+                  <Button variant="primary" className="min-h-12" disabled>
+                    Approval unavailable
                   </Button>
-                  <Button variant="danger-outline" className="min-h-12" onClick={() => setDecision('reject')}>
-                    Reject
+                  <Button variant="danger-outline" className="min-h-12" disabled>
+                    Rejection unavailable
                   </Button>
                 </div>
               )}
@@ -486,11 +497,9 @@ export function AdminRespondersView() {
             </Button>
             <Button
               variant={decision === 'approve' ? 'primary' : 'danger'}
-              disabled={reasonTooShort}
+              disabled
+              title="Responder decisions are unavailable in this demo."
               onClick={() => {
-                toast(decision === 'approve' ? 'Responder approved' : 'Responder rejected', {
-                  description: 'Phase 1 shell: nothing was sent. A real decision writes an audit entry and notifies the responder.',
-                });
                 setDecision(null);
                 setReason('');
                 setTouched(false);
@@ -753,9 +762,16 @@ export function AdminSettingsView() {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Platform settings"
-        description="Tunables that change how the system behaves. Every change is recorded with the previous and new value."
+        description="Review the platform setting controls. Saving changes is unavailable in this build."
         meta={<DemoDataBadge />}
       />
+
+      <Alert tone="warning">
+        <AlertTitle>Settings are preview-only in this demo</AlertTitle>
+        <AlertDescription>
+          Values can be reviewed here, but changes cannot be saved or applied to incident processing.
+        </AlertDescription>
+      </Alert>
 
       <Alert tone="warning">
         <AlertTitle>Changes affect new incidents immediately</AlertTitle>
@@ -894,24 +910,16 @@ export function AdminSettingsView() {
           <div>
             <Button
               variant="primary"
-              disabled={reasonTooShort || anyInvalid}
+              disabled
               title={
                 reasonTooShort
                   ? 'A reason is required'
                   : anyInvalid
                     ? 'One or more values are outside the allowed range'
-                    : undefined
+                    : 'Saving platform settings is unavailable in this demo.'
               }
-              onClick={() => {
-                toast('Settings change recorded', {
-                  description:
-                    'Phase 1 shell: nothing was sent. A real save writes the previous and new values to the audit log.',
-                });
-                setReason('');
-                setTouched(false);
-              }}
             >
-              Save and record the change
+              Saving unavailable
             </Button>
           </div>
         </CardContent>

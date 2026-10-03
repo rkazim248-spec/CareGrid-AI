@@ -57,6 +57,7 @@
 /* eslint-disable @typescript-eslint/no-this-alias */
 
 import { FieldValue } from 'firebase-admin/firestore';
+import type { FieldPath } from 'firebase-admin/firestore';
 
 type Row = { id: string; path: string; data: Record<string, unknown> };
 
@@ -283,7 +284,10 @@ export class FakeFirestore {
         let rows = db.queryMatches(collectionPath, filters);
         for (const o of [...orders].reverse()) {
           rows = [...rows].sort((a, b) => {
-            const cmp = compare(getPath(a.data, o.field), getPath(b.data, o.field));
+            const cmp =
+              o.field === '__name__'
+                ? compare(a.id, b.id)
+                : compare(getPath(a.data, o.field), getPath(b.data, o.field));
             return o.dir === 'desc' ? -cmp : cmp;
           });
         }
@@ -310,8 +314,8 @@ export class FakeFirestore {
         where(field: string, op: string, value: unknown) {
           return buildQuery([...filters, { field, op, value }], orders, limit);
         },
-        orderBy(field: string, dir: 'asc' | 'desc' = 'asc') {
-          return buildQuery(filters, [...orders, { field, dir }], limit);
+        orderBy(field: string | FieldPath, dir: 'asc' | 'desc' = 'asc') {
+          return buildQuery(filters, [...orders, { field: field.toString(), dir }], limit);
         },
         limit(n: number) {
           return buildQuery(filters, orders, n);

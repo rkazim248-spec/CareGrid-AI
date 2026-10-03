@@ -1,12 +1,17 @@
 import type { Metadata } from 'next';
 
-import { AdminSettingsView } from '@/features/admin/admin-views';
+import { LiveDataUnavailable } from '@/components/feedback';
 
 export const metadata: Metadata = {
   title: 'Platform settings',
-  description: 'Duplicate-detection thresholds and response targets. Every change is recorded.',
+  description: 'Platform settings are unavailable until the live admin service is connected.',
 };
 
 export default function AdminSettingsPage() {
-  return <AdminSettingsView />;
+  return (
+    <LiveDataUnavailable
+      title="Platform settings"
+      description="Operational settings are not connected to a live administrative service and cannot be saved here."
+    />
+  );
 }

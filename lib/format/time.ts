@@ -7,7 +7,7 @@
  * because Phase 1 has no server and must not pretend otherwise.
  */
 
-import { format, formatDistanceToNowStrict, isToday, isYesterday } from 'date-fns';
+import { format, formatDistanceStrict, isToday, isYesterday } from 'date-fns';
 
 /** docs/21 §2. Mirrors APP_TIMEZONE. */
 export const APP_TIMEZONE = 'Asia/Kolkata';
@@ -49,10 +49,13 @@ export function toDateTimeAttr(iso: string): string {
 }
 
 /** `just now` · `4 min ago` · `2 h ago` · `3 d ago` — docs/04 §5.28. */
-export function formatRelative(iso: string, now: Date = DEMO_NOW): string {
-  const diffMs = now.getTime() - new Date(iso).getTime();
-  if (diffMs < 60_000) return 'just now';
-  return `${formatDistanceToNowStrict(new Date(iso), { addSuffix: true })}`;
+export function formatRelative(iso: string, now: Date = new Date()): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return 'Unknown time';
+
+  const diffMs = now.getTime() - date.getTime();
+  if (Math.abs(diffMs) < 60_000) return 'just now';
+  return formatDistanceStrict(date, now, { addSuffix: true });
 }
 
 /** The `aria-label` for a RelativeTime is the ABSOLUTE time, never "2 h ago". */

@@ -13,7 +13,7 @@ import { RoleGate } from '@/features/shared/role-gate';
 export const metadata: Metadata = {
   title: 'Dispatches',
   description:
-    'Community responder assignments: who was asked, whether they accepted, and how long they took to reply. Demo data only.',
+    'Community responder assignment history and status.',
 };
 
 export default function Page() {

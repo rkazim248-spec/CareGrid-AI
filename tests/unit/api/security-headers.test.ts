@@ -144,7 +144,10 @@ describe('the CSP does not break the integrations', () => {
     ['connect-src', 'securetoken.googleapis.com', 'token refresh, so a session survives an hour'],
     ['connect-src', 'wss://*.firebaseio.com', 'the realtime listeners in docs/11'],
     ['connect-src', 'firebasestorage.googleapis.com', 'evidence images, Phase 5'],
+    ['connect-src', 'api.mapbox.com', 'Mapbox styles, tiles, and glyphs'],
     ['img-src', 'firebasestorage.googleapis.com', 'an evidence image from a signed URL'],
+    ['img-src', 'api.mapbox.com', 'Mapbox raster tiles'],
+    ['font-src', 'api.mapbox.com', 'Mapbox glyphs'],
     ['frame-src', 'accounts.google.com', 'the Google sign-in flow'],
     ['frame-src', '*.firebaseapp.com', 'the Firebase Auth iframe flow'],
     ['media-src', 'blob:', 'previewing a recorded voice report before upload'],
@@ -267,4 +270,3 @@ describe('the middleware is not a security control, and does not pretend to be',
     expect(matcher).toMatch(/api\|_next/);
   });
 });
-

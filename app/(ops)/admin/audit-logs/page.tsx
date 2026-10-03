@@ -1,18 +1,17 @@
 import type { Metadata } from 'next';
-import { Suspense } from 'react';
 
-import { AdminSkeleton } from '@/components/layout';
-import { AdminAuditLogsView } from '@/features/admin/admin-views';
+import { LiveDataUnavailable } from '@/components/feedback';
 
 export const metadata: Metadata = {
   title: 'Audit log',
-  description: 'Append-only record of every privileged action. Retained for 365 days.',
+  description: 'The audit log is unavailable until the live administrative service is connected.',
 };
 
 export default function AdminAuditLogsPage() {
   return (
-    <Suspense fallback={<AdminSkeleton label="Loading the audit log" />}>
-      <AdminAuditLogsView />
-    </Suspense>
+    <LiveDataUnavailable
+      title="Audit log"
+      description="Privileged-action records are not connected to a live audit service. No sample events are shown."
+    />
   );
 }

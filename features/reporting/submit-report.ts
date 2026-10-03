@@ -247,7 +247,10 @@ export function describeSubmitError(error: unknown): {
       };
     }
     if (error.status === 403) {
-      return { message: error.message, recoverable: false };
+      return {
+        message: `${error.message} Your report text is still here.`,
+        recoverable: false,
+      };
     }
     if (error.status === 400) {
       // The server's message is already written for a person (it names the photo

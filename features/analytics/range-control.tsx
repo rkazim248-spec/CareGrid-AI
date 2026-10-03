@@ -2,7 +2,6 @@
 
 import * as React from 'react';
 import { Download } from 'lucide-react';
-import { toast } from 'sonner';
 
 import {
   Badge,
@@ -101,17 +100,18 @@ export function RangeControl({
           <div className="flex flex-col gap-1 lg:ml-auto">
             <Button
               variant="outline"
-              onClick={() =>
-                toast.info('Export CSV', {
-                  description: 'Demo build — no file is produced. A real export covers exactly this range.',
-                })
-              }
-              {...(canExport ? {} : { disabledReason: 'Available to dispatchers and administrators' })}
+              disabled
+              aria-describedby={`${id}-export-note`}
               className="w-full min-h-11 lg:w-auto"
             >
               <Download aria-hidden="true" />
               Export CSV
             </Button>
+            <p id={`${id}-export-note`} className="max-w-60 text-xs text-muted">
+              {canExport
+                ? 'CSV export is not connected in this build; no file will be created.'
+                : 'CSV export is available to dispatchers and administrators.'}
+            </p>
           </div>
         </div>
 
