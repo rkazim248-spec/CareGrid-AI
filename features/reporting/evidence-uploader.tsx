@@ -429,7 +429,12 @@ function EvidenceItemRow({
             <FileWarning aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
             <span>
               {item.error}
-              <span className="block text-xs text-muted-foreground">{COPY.failedBody}</span>
+              <span className="block text-xs text-muted-foreground">
+                {COPY.failedBody}
+                {item.error === 'Image storage is temporarily unavailable in this demo.'
+                  ? ' Remove this image to continue without it.'
+                  : ''}
+              </span>
             </span>
           </p>
           {item.retryable ? (

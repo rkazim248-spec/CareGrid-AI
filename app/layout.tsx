@@ -3,6 +3,7 @@ import { headers } from 'next/headers';
 
 import '@/app/styles/globals.css';
 import { AppProviders } from '@/components/providers/app-providers';
+import { DemoAvailabilityNotice } from '@/components/feedback/demo-availability-notice';
 
 export const metadata: Metadata = {
   title: {
@@ -84,6 +85,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           >
             Skip to main content
           </a>
+          <DemoAvailabilityNotice />
           {children}
         </AppProviders>
       </body>

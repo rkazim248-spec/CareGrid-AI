@@ -1,10 +1,10 @@
 'use client';
 
 import * as React from 'react';
-import { ClipboardList } from 'lucide-react';
+import { ClipboardList, RefreshCw } from 'lucide-react';
 
-import { ErrorState, EMPTY_COPY, EmptyState } from '@/components/feedback';
-import { Button } from '@/components/ui';
+import { EMPTY_COPY, EmptyState } from '@/components/feedback';
+import { Alert, AlertDescription, AlertIcon, AlertTitle, Button } from '@/components/ui';
 import { listIncidents } from '@/lib/api/client';
 import { MyReportCard } from '@/features/incidents/my-report-card';
 import { MyReportsFilters } from '@/features/incidents/my-reports-filters';
@@ -95,11 +95,24 @@ export function MyReportsList({ searchLabel }: { searchLabel?: string } = {}) {
           ))}
         </ul>
       ) : error ? (
-        <ErrorState
-          title="We could not load your reports"
-          description="Your reports have not been changed. Check your connection and try again."
-          onRetry={() => setReload((value) => value + 1)}
-        />
+        <Alert tone="warning" role="status" className="items-center">
+          <AlertIcon tone="warning" />
+          <div className="min-w-0 flex-1">
+            <AlertTitle>We could not load your reports</AlertTitle>
+            <AlertDescription>
+              Your reports have not been changed. Check your connection and try again.
+            </AlertDescription>
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => setReload((value) => value + 1)}
+          >
+            <RefreshCw aria-hidden="true" />
+            Retry
+          </Button>
+        </Alert>
       ) : visible.length === 0 ? (
         <EmptyState
           icon={ClipboardList}

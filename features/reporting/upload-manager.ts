@@ -42,6 +42,7 @@
  */
 
 import { uploadsFinalize, uploadsSign } from '@/lib/api/client';
+import { isApiError } from '@/lib/api/errors';
 import { getUploadLimits } from '@/lib/env.client';
 import {
   ALLOWED_AUDIO_TYPES,
@@ -541,9 +542,11 @@ export async function startUpload(
     // `String(error)` — which for a TypeError is "TypeError: Failed to fetch" and
     // tells a citizen nothing.
     const message =
-      error instanceof Error && error.message.length > 0 && error.message.length < 300
-        ? error.message
-        : 'That upload did not finish. Your report text is safe — please try again.';
+      isApiError(error) && error.code === 'STORAGE_UNAVAILABLE'
+        ? 'Image storage is temporarily unavailable in this demo.'
+        : error instanceof Error && error.message.length > 0 && error.message.length < 300
+          ? error.message
+          : 'That upload did not finish. Your report text is safe — please try again.';
 
     advance(localId, 'failed', { error: message, retryable: true });
     return { ok: false, localId, rejection: { code: 'UNREADABLE', message } };

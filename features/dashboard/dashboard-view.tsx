@@ -3,13 +3,13 @@
 import * as React from 'react';
 import Link from 'next/link';
 import type { Route } from 'next';
-import { Activity, ArrowUpRight, Bell, ClipboardList, Map, MapPin, Siren } from 'lucide-react';
+import { Activity, ArrowUpRight, Bell, ClipboardList, Map, MapPin, RefreshCw, Siren } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { z } from 'zod';
 
-import { ErrorState, EmptyState } from '@/components/feedback';
+import { EmptyState } from '@/components/feedback';
 import { RoleBadge, StatusBadge, Timestamp, UrgencyBadge } from '@/components/domain';
-import { Button, Card, CardContent } from '@/components/ui';
+import { Alert, AlertDescription, AlertIcon, AlertTitle, Button, Card, CardContent } from '@/components/ui';
 import { listIncidents } from '@/lib/api/client';
 import { useSession } from '@/components/providers/session-provider';
 import { useRealtimeNotifications } from '@/features/notifications/use-realtime-notifications';
@@ -61,9 +61,9 @@ export function DashboardView() {
       ? String(notifications.unreadCount)
       : 'Loading';
   const overview = [
-    { label: 'Active reports', value: loading ? 'Loading' : failed ? 'Unavailable' : String(activeCount), detail: 'In the latest reports', icon: Activity },
-    { label: 'Resolved reports', value: loading ? 'Loading' : failed ? 'Unavailable' : String(resolvedCount), detail: 'In the latest reports', icon: ClipboardList },
-    { label: 'Pending reports', value: loading ? 'Loading' : failed ? 'Unavailable' : String(pendingCount), detail: 'Awaiting review', icon: Siren },
+    { label: 'Active reports', value: loading ? 'Loading' : failed ? '—' : String(activeCount), detail: 'In the latest reports', icon: Activity },
+    { label: 'Resolved reports', value: loading ? 'Loading' : failed ? '—' : String(resolvedCount), detail: 'In the latest reports', icon: ClipboardList },
+    { label: 'Pending reports', value: loading ? 'Loading' : failed ? '—' : String(pendingCount), detail: 'Awaiting review', icon: Siren },
     { label: 'Community activity', value: notificationValue, detail: 'Unread updates in your feed', icon: Bell },
   ];
 
@@ -91,6 +91,27 @@ export function DashboardView() {
           </Link>
         </Button>
       </header>
+
+      {failed ? (
+        <Alert tone="warning" role="status" className="items-center">
+          <AlertIcon tone="warning" />
+          <div className="min-w-0 flex-1">
+            <AlertTitle>Incident services are temporarily unavailable</AlertTitle>
+            <AlertDescription>
+              Your dashboard is available, but incident data could not be loaded.
+            </AlertDescription>
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => setReload((value) => value + 1)}
+          >
+            <RefreshCw aria-hidden="true" />
+            Retry
+          </Button>
+        </Alert>
+      ) : null}
 
       <section aria-label="Report overview">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -139,8 +160,8 @@ export function DashboardView() {
             {[0, 1].map((index) => <li key={index} className="skeleton-fill h-24 rounded-card" />)}
           </ul>
         ) : failed ? (
-          <p role="alert" className="rounded-card border border-danger/30 bg-danger-muted px-4 py-3 text-sm text-danger-fg-muted">
-            Active incidents could not be loaded. Use the retry control in Recent reports.
+          <p className="text-sm text-secondary">
+            Active emergency data will appear here when the incident service responds.
           </p>
         ) : activeItems.length === 0 ? (
           <EmptyState
@@ -197,11 +218,9 @@ export function DashboardView() {
             ))}
           </ul>
         ) : failed ? (
-          <ErrorState
-            title="We could not load your dashboard"
-            description="Your account is signed in, but the incident list did not load. Check your connection and retry."
-            onRetry={() => setReload((value) => value + 1)}
-          />
+          <p className="text-sm text-secondary">
+            Recent report data is temporarily unavailable.
+          </p>
         ) : items.length === 0 ? (
           <EmptyState
             icon={Siren}
